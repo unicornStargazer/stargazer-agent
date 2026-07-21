@@ -1,0 +1,7 @@
+.codex/
+.idea/
+dist/
+node_modules/
+*.py
+*.pyc
+uv.lock
