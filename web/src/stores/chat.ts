@@ -21,6 +21,7 @@ export const useChatStore = defineStore('chat', () => {
   const failedRequests = ref<Record<string, FailedChatRequest>>({});
   const deletingConversationIds = ref<string[]>([]);
   const notice = ref<string | undefined>();
+  const selectedProfileId = ref('default');
 
   const activeConversation = computed(() =>
     conversations.value.find((conversation) => conversation.id === activeConversationId.value),
@@ -44,7 +45,7 @@ export const useChatStore = defineStore('chat', () => {
       (conversation) => conversation.id === activeConversationId.value,
     );
     if (!activeExists) {
-      const conversation = createConversation();
+      const conversation = createConversation(selectedProfileId.value);
       conversations.value.unshift(conversation);
       activeConversationId.value = conversation.id;
       persistWorkspace();
@@ -55,18 +56,34 @@ export const useChatStore = defineStore('chat', () => {
     if (activeConversation.value?.messages.length === 0) {
       return;
     }
-    const conversation = createConversation();
+    const conversation = createConversation(selectedProfileId.value);
     conversations.value.unshift(conversation);
     activeConversationId.value = conversation.id;
     persistWorkspace();
   }
 
   function selectConversation(conversationId: string): void {
-    if (!conversations.value.some((conversation) => conversation.id === conversationId)) {
+    const conversation = conversations.value.find((item) => item.id === conversationId);
+    if (conversation === undefined) {
       return;
     }
     activeConversationId.value = conversationId;
+    selectedProfileId.value = conversation.profileId;
     persistWorkspace();
+  }
+
+  function selectProfile(profileId: string): void {
+    if (!/^[a-zA-Z0-9_-]+$/.test(profileId) || profileId === selectedProfileId.value) {
+      return;
+    }
+    selectedProfileId.value = profileId;
+    // 已有消息的会话必须维持原 Profile；切换时主动开始新会话而不是让用户碰到冲突错误。
+    if (activeConversation.value?.messages.length) {
+      const conversation = createConversation(profileId);
+      conversations.value.unshift(conversation);
+      activeConversationId.value = conversation.id;
+      persistWorkspace();
+    }
   }
 
   async function deleteConversation(conversationId: string): Promise<void> {
@@ -146,15 +163,16 @@ export const useChatStore = defineStore('chat', () => {
     pendingRequests.value[conversationId] = request;
     delete failedRequests.value[conversationId];
     try {
-      const response = await sendChatMessage({
-        sessionId: conversationId,
-        requestId: request.requestId,
-        message: request.message,
-      });
       const conversation = conversations.value.find((item) => item.id === conversationId);
       if (conversation === undefined) {
         return;
       }
+      const response = await sendChatMessage({
+        sessionId: conversationId,
+        requestId: request.requestId,
+        message: request.message,
+        profileId: conversation.profileId,
+      });
       const assistantMessage: ConversationMessage = {
         id: createIdentifier('message'),
         role: 'assistant',
@@ -175,7 +193,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function ensureConversationAfterDelete(deletedConversationId: string): void {
     if (conversations.value.length === 0) {
-      conversations.value.push(createConversation());
+      conversations.value.push(createConversation(selectedProfileId.value));
     }
     if (activeConversationId.value === deletedConversationId) {
       activeConversationId.value = conversations.value[0]?.id;
@@ -204,6 +222,7 @@ export const useChatStore = defineStore('chat', () => {
     failedRequests,
     deletingConversationIds,
     notice,
+    selectedProfileId,
     activeConversation,
     sortedConversations,
     activePendingRequest,
@@ -211,6 +230,7 @@ export const useChatStore = defineStore('chat', () => {
     initialize,
     createNewConversation,
     selectConversation,
+    selectProfile,
     deleteConversation,
     sendMessage,
     retryFailedRequest,
@@ -218,10 +238,11 @@ export const useChatStore = defineStore('chat', () => {
   };
 });
 
-function createConversation(): Conversation {
+function createConversation(profileId: string): Conversation {
   const now = new Date().toISOString();
   return {
     id: createIdentifier('session'),
+    profileId,
     title: '新对话',
     createdAt: now,
     updatedAt: now,

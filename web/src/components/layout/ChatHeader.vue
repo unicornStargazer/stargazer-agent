@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { PanelLeft, Trash2 } from '@lucide/vue';
+import type { AgentProfile } from '../../types/chat';
 
 defineProps<{
   title: string;
   busy: boolean;
   deleting: boolean;
+  profiles: readonly AgentProfile[];
+  selectedProfileId: string;
 }>();
 
 const emit = defineEmits<{
   openSidebar: [];
   delete: [];
+  selectProfile: [profileId: string];
 }>();
 </script>
 
@@ -28,6 +32,18 @@ const emit = defineEmits<{
       <strong>{{ title }}</strong>
       <span>{{ busy ? '正在生成回复' : '随时可以开始' }}</span>
     </div>
+    <select
+      v-if="profiles.length > 1"
+      class="profile-select"
+      aria-label="选择 Agent Profile"
+      :value="selectedProfileId"
+      :disabled="busy"
+      @change="emit('selectProfile', ($event.target as HTMLSelectElement).value)"
+    >
+      <option v-for="profile in profiles" :key="profile.id" :value="profile.id">
+        {{ profile.name }}
+      </option>
+    </select>
     <button
       class="icon-button"
       type="button"
@@ -81,6 +97,18 @@ const emit = defineEmits<{
 
 .mobile-menu-button {
   visibility: hidden;
+}
+
+.profile-select {
+  max-width: 160px;
+  min-height: 30px;
+  padding: 0 7px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
 }
 
 @media (max-width: 900px) {

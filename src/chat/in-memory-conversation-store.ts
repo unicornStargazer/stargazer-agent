@@ -8,18 +8,19 @@ import {
   normalizeConversationMessageLimit,
   normalizeConversationSessionId,
 } from './conversation-store.js';
-import type { ConversationStore } from './conversation-store.js';
+import type { ConversationProfileStore } from './conversation-store.js';
 import type { ChatMessage } from './models.js';
 
-export class InMemoryConversationStore implements ConversationStore {
+export class InMemoryConversationStore implements ConversationProfileStore {
   private readonly messagesBySession = new Map<string, ChatMessage[]>();
+  private readonly profileBySession = new Map<string, string>();
 
-/**
- * 获取指定会话的消息列表
- * @param sessionId 会话ID，用于标识特定的对话会话
- * @param limit 可选参数，限制返回的消息数量
- * @returns 返回一个Promise，解析为只读的ChatMessage数组
- */
+  /**
+   * 获取指定会话的消息列表
+   * @param sessionId 会话ID，用于标识特定的对话会话
+   * @param limit 可选参数，限制返回的消息数量
+   * @returns 返回一个Promise，解析为只读的ChatMessage数组
+   */
   messages(sessionId: string, limit?: number): Promise<readonly ChatMessage[]> {
     // 标准化会话ID，确保ID格式统一
     const normalizedSessionId = normalizeConversationSessionId(sessionId);
@@ -34,12 +35,12 @@ export class InMemoryConversationStore implements ConversationStore {
     return Promise.resolve([...visibleMessages]);
   }
 
-/**
- * 向指定会话追加消息的方法
- * @param sessionId - 会话ID，用于标识特定的对话会话
- * @param messages - 要追加的消息数组，使用ChatMessage类型，且为只读数组
- * @returns 返回一个Promise，解析为void类型
- */
+  /**
+   * 向指定会话追加消息的方法
+   * @param sessionId - 会话ID，用于标识特定的对话会话
+   * @param messages - 要追加的消息数组，使用ChatMessage类型，且为只读数组
+   * @returns 返回一个Promise，解析为void类型
+   */
   append(sessionId: string, messages: readonly ChatMessage[]): Promise<void> {
     // 如果消息数组为空，直接返回已解析的Promise
     if (messages.length === 0) {
@@ -58,7 +59,24 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   clear(sessionId: string): Promise<void> {
-    this.messagesBySession.delete(normalizeConversationSessionId(sessionId));
+    const normalizedSessionId = normalizeConversationSessionId(sessionId);
+    this.messagesBySession.delete(normalizedSessionId);
+    this.profileBySession.delete(normalizedSessionId);
+    return Promise.resolve();
+  }
+
+  profileId(sessionId: string): Promise<string | undefined> {
+    return Promise.resolve(this.profileBySession.get(normalizeConversationSessionId(sessionId)));
+  }
+
+  bindProfile(sessionId: string, profileId: string): Promise<void> {
+    const normalizedSessionId = normalizeConversationSessionId(sessionId);
+    const normalizedProfileId = normalizeConversationSessionId(profileId);
+    const existingProfileId = this.profileBySession.get(normalizedSessionId);
+    if (existingProfileId !== undefined && existingProfileId !== normalizedProfileId) {
+      return Promise.reject(new Error('会话已绑定其他 Profile'));
+    }
+    this.profileBySession.set(normalizedSessionId, normalizedProfileId);
     return Promise.resolve();
   }
 }

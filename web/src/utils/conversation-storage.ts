@@ -56,6 +56,7 @@ function isStoredConversation(value: unknown): value is Conversation {
   }
   return (
     typeof value.id === 'string' &&
+    typeof value.profileId === 'string' &&
     typeof value.title === 'string' &&
     typeof value.createdAt === 'string' &&
     typeof value.updatedAt === 'string' &&
@@ -80,6 +81,7 @@ function isStoredMessage(value: unknown): value is ConversationMessage {
 function cloneConversation(conversation: Conversation): Conversation {
   return {
     id: conversation.id,
+    profileId: conversation.profileId,
     title: conversation.title,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,

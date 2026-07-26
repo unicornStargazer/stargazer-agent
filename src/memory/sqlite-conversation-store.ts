@@ -12,7 +12,7 @@ import {
   normalizeConversationMessageLimit,
   normalizeConversationSessionId,
 } from '../chat/conversation-store.js';
-import type { ConversationStore } from '../chat/conversation-store.js';
+import type { ConversationProfileStore } from '../chat/conversation-store.js';
 import { createChatMessage } from '../chat/models.js';
 import type { ChatMessage, ChatRole } from '../chat/models.js';
 
@@ -24,6 +24,7 @@ const Database = sqlite3.Database;
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS conversation_sessions (
     session_id TEXT PRIMARY KEY NOT NULL,
+    profile_id TEXT,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
   );
@@ -51,12 +52,16 @@ interface SequenceRow {
   readonly next_sequence: number;
 }
 
+interface TableColumnRow {
+  readonly name: string;
+}
+
 export interface SqliteConversationStoreOptions {
   /** SQLite 数据库文件路径；由服务端配置决定，不能来自浏览器请求。 */
   readonly databasePath: string;
 }
 
-export class SqliteConversationStore implements ConversationStore {
+export class SqliteConversationStore implements ConversationProfileStore {
   private readonly database: SqliteDatabase;
   private operationTail: Promise<void> = Promise.resolve();
   private closed = false;
@@ -77,6 +82,7 @@ export class SqliteConversationStore implements ConversationStore {
       database.configure('busyTimeout', SQLITE_BUSY_TIMEOUT_MS);
       await execute(database, 'PRAGMA foreign_keys = ON');
       await executeScript(database, SCHEMA_SQL);
+      await ensureProfileColumn(database);
       return store;
     } catch (error: unknown) {
       await closeDatabase(database).catch(() => undefined);
@@ -115,12 +121,12 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-/**
- * 向指定会话追加消息的异步方法
- * @param sessionId 会话ID
- * @param messages 要追加的消息列表，只读数组
- * @returns Promise<void>
- */
+  /**
+   * 向指定会话追加消息的异步方法
+   * @param sessionId 会话ID
+   * @param messages 要追加的消息列表，只读数组
+   * @returns Promise<void>
+   */
   async append(sessionId: string, messages: readonly ChatMessage[]): Promise<void> {
     // 如果消息列表为空，直接返回
     if (messages.length === 0) {
@@ -189,6 +195,51 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   /** 供进程关闭和隔离测试释放 SQLite 文件句柄；关闭后不再接受读写。 */
+  async profileId(sessionId: string): Promise<string | undefined> {
+    const normalizedSessionId = normalizeConversationSessionId(sessionId);
+    return this.withOperation(async () => {
+      const row = await queryOne<{ readonly profile_id: string | null }>(
+        this.database,
+        'SELECT profile_id FROM conversation_sessions WHERE session_id = ?',
+        [normalizedSessionId],
+      );
+      return row?.profile_id ?? undefined;
+    });
+  }
+
+  async bindProfile(sessionId: string, profileId: string): Promise<void> {
+    const normalizedSessionId = normalizeConversationSessionId(sessionId);
+    const normalizedProfileId = normalizeConversationSessionId(profileId);
+    await this.withOperation(async () => {
+      const timestamp = Date.now();
+      await execute(this.database, 'BEGIN IMMEDIATE');
+      try {
+        const existing = await queryOne<{ readonly profile_id: string | null }>(
+          this.database,
+          'SELECT profile_id FROM conversation_sessions WHERE session_id = ?',
+          [normalizedSessionId],
+        );
+        if (existing?.profile_id !== null && existing?.profile_id !== undefined) {
+          if (existing.profile_id !== normalizedProfileId) {
+            throw new Error('会话已绑定其他 Profile');
+          }
+        } else {
+          await execute(
+            this.database,
+            `INSERT INTO conversation_sessions (session_id, profile_id, created_at_ms, updated_at_ms)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(session_id) DO UPDATE SET profile_id = excluded.profile_id`,
+            [normalizedSessionId, normalizedProfileId, timestamp, timestamp],
+          );
+        }
+        await execute(this.database, 'COMMIT');
+      } catch (error: unknown) {
+        await rollback(this.database);
+        throw error;
+      }
+    });
+  }
+
   async close(): Promise<void> {
     await this.enqueue(async () => {
       if (this.closed) {
@@ -262,6 +313,14 @@ function openDatabase(databasePath: string): Promise<SqliteDatabase> {
       rejectOpen(error);
     });
   });
+}
+
+/** 为已有数据库补齐 Profile 元数据列，保持 P0.1 创建的会话可直接升级。 */
+async function ensureProfileColumn(database: SqliteDatabase): Promise<void> {
+  const columns = await query<TableColumnRow>(database, 'PRAGMA table_info(conversation_sessions)');
+  if (!columns.some((column) => column.name === 'profile_id')) {
+    await execute(database, 'ALTER TABLE conversation_sessions ADD COLUMN profile_id TEXT');
+  }
 }
 
 function closeDatabase(database: SqliteDatabase): Promise<void> {

@@ -9,6 +9,7 @@ export interface ConversationMessage {
 
 export interface Conversation {
   readonly id: string;
+  readonly profileId: string;
   title: string;
   readonly createdAt: string;
   updatedAt: string;
@@ -27,7 +28,14 @@ export interface FailedChatRequest extends PendingChatRequest {
 export interface AgentStatus {
   readonly ready: boolean;
   readonly model: string;
-  readonly conversationStorage: 'memory';
+  readonly conversationStorage: 'memory' | 'sqlite';
+  readonly defaultProfile?: AgentProfile | undefined;
+}
+
+export interface AgentProfile {
+  readonly id: string;
+  readonly name: string;
+  readonly model: string;
 }
 
 export interface AgentViewStatus {
@@ -45,4 +53,5 @@ export interface ChatRequest {
   readonly sessionId: string;
   readonly requestId: string;
   readonly message: string;
+  readonly profileId: string;
 }

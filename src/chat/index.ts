@@ -10,7 +10,7 @@ export {
   normalizeConversationMessageLimit,
   normalizeConversationSessionId,
 } from './conversation-store.js';
-export type { ConversationStore } from './conversation-store.js';
+export type { ConversationProfileStore, ConversationStore } from './conversation-store.js';
 export { InMemoryConversationStore } from './in-memory-conversation-store.js';
 export { createChatMessage } from './models.js';
 export type { ChatMessage, ChatRole } from './models.js';

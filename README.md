@@ -6,7 +6,7 @@ Stargazer Agent 是一个可快速运行的 TypeScript 文本对话 Agent，提�
 
 ## 环境
 
-- Node.js 22 LTS
+- Node.js 20.19+，推荐 Node.js 22 LTS；Node.js 21 使用构建兼容层。
 - npm
 
 ## 安装与开发
@@ -34,6 +34,9 @@ $env:STARGAZER_SYSTEM_PROMPT = "回答要简洁"
 $env:STARGAZER_DATABASE_PATH = "D:\\agent-data\\stargazer-agent.sqlite"
 # 可选，与 STARGAZER_DATABASE_PATH 二选一，默认 ./data
 $env:STARGAZER_DATA_DIR = "D:\\agent-data"
+# 可选：受控的 Agent Profile 列表。浏览器只会看到 id、名称和模型名。
+# API Key 与 Base URL 仍只从上面的服务端环境变量读取。
+$env:STARGAZER_AGENT_PROFILES = '[{"id":"concise","name":"简洁助手","model":"gpt-4.1-mini","systemPrompt":"回答要简洁","historyLimit":12},{"id":"detailed","name":"详细助手","model":"gpt-4.1-mini","systemPrompt":"给出必要的推理和示例","historyLimit":24}]'
 ```
 
 ## Web 工作台
@@ -55,6 +58,8 @@ npm run web
 该命令先生成 `web/dist`，再启动同源 Web 服务。浏览器访问 `http://127.0.0.1:3000`；可通过 `HOST` 和 `PORT` 环境变量修改监听地址和端口。
 
 页面提供多会话导航、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，模型上下文由服务端 SQLite 保存；删除会话时会同时清除两侧记录。
+
+Profile 由服务端环境变量 `STARGAZER_AGENT_PROFILES` 管理。未设置时自动使用与既有 `OPENAI_MODEL`、`STARGAZER_SYSTEM_PROMPT` 相同的默认 Profile。工作台切换 Profile 会新建会话；服务端也会把 Profile 标识持久化到 SQLite，拒绝把已有会话改绑到另一个 Profile。
 
 构建后运行 Web 服务：
 

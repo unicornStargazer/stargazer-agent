@@ -13,4 +13,6 @@ export interface ChatModel {
    * 实现不得修改输入数组；网络或供应商错误应以异常传递，不能伪造空回复。
    */
   complete(messages: readonly ChatMessage[]): Promise<string>;
+  /** 可选的增量文本输出；不支持时调用方可退回 complete。 */
+  stream?(messages: readonly ChatMessage[]): AsyncIterable<string>;
 }

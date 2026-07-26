@@ -63,13 +63,44 @@ export class OpenAICompatibleChatModel implements ChatModel {
     return extractAssistantText(await parseJsonResponse(response));
   }
 
+  async *stream(messages: readonly ChatMessage[]): AsyncGenerator<string> {
+    if (messages.length === 0) throw new Error('至少需要一条消息才能调用模型');
+    const response = await this.requestCompletion(messages, true);
+    if (!response.ok || response.body === null)
+      throw new OpenAICompatibleError(`模型服务返回 HTTP ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        buffer += decoder.decode(result.value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') return;
+          const chunk = streamText(data);
+          if (chunk) yield chunk;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   /**
    * 请求模型完成对话的私有异步方法
    * @param messages - 聊天消息的只读数组，包含对话历史
    * @returns 返回一个Promise，解析为Response对象
    * @throws 当请求超时或连接失败时抛出OpenAICompatibleError
    */
-  private async requestCompletion(messages: readonly ChatMessage[]): Promise<Response> {
+  private async requestCompletion(
+    messages: readonly ChatMessage[],
+    stream = false,
+  ): Promise<Response> {
     // 创建一个AbortController实例用于控制请求超时
     const controller = new AbortController();
     // 设置定时器，在配置的超时时间后中止请求
@@ -91,6 +122,7 @@ export class OpenAICompatibleChatModel implements ChatModel {
             role: message.role, // 消息角色
             content: message.content, // 消息内容
           })),
+          ...(stream ? { stream: true } : {}),
         }),
         signal: controller.signal, // 绑定中止信号
       });
@@ -105,6 +137,18 @@ export class OpenAICompatibleChatModel implements ChatModel {
       // 确保清除定时器，防止内存泄漏
       clearTimeout(timeoutId);
     }
+  }
+}
+
+function streamText(value: string): string | undefined {
+  try {
+    const body = requireRecord(JSON.parse(value) as unknown);
+    const choices = requireArray(body.choices, '模型流响应缺少 choices');
+    const delta = requireRecord(requireRecord(choices[0]).delta);
+    return typeof delta.content === 'string' ? delta.content : undefined;
+  } catch (error) {
+    if (error instanceof OpenAICompatibleError) throw error;
+    throw new OpenAICompatibleError('模型流响应不是有效 JSON');
   }
 }
 

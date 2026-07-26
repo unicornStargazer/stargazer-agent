@@ -7,6 +7,8 @@ import ChatEmptyState from './components/chat/ChatEmptyState.vue';
 import ChatMessages from './components/chat/ChatMessages.vue';
 import ChatHeader from './components/layout/ChatHeader.vue';
 import ChatSidebar from './components/layout/ChatSidebar.vue';
+import { loadAgentProfiles } from './services/chat-api';
+import type { AgentProfile } from './types/chat';
 import { useAgentStatus } from './composables/useAgentStatus';
 import { useChatStore } from './stores/chat';
 
@@ -28,6 +30,7 @@ const {
   sortedConversations,
 } = storeToRefs(chatStore);
 const { status } = useAgentStatus();
+const profiles = ref<readonly AgentProfile[]>([]);
 
 const sidebarOpen = ref(false);
 const draft = ref('');
@@ -82,6 +85,10 @@ function choosePrompt(prompt: string): void {
   focusComposer();
 }
 
+function selectProfile(profileId: string): void {
+  chatStore.selectProfile(profileId);
+}
+
 function focusComposer(): void {
   void nextTick(() => composer.value?.focus());
 }
@@ -125,6 +132,17 @@ watch(notice, (message) => {
 
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown);
+  void loadAgentProfiles()
+    .then((loadedProfiles) => {
+      profiles.value = loadedProfiles;
+      const currentProfileExists = loadedProfiles.some(
+        (profile) => profile.id === chatStore.selectedProfileId,
+      );
+      if (!currentProfileExists && loadedProfiles[0] !== undefined) {
+        chatStore.selectProfile(loadedProfiles[0].id);
+      }
+    })
+    .catch(() => undefined);
   focusComposer();
 });
 
@@ -161,8 +179,11 @@ onUnmounted(() => {
         :title="activeConversation?.title ?? '新对话'"
         :busy="activeBusy"
         :deleting="activeDeleting"
+        :profiles="profiles"
+        :selected-profile-id="chatStore.selectedProfileId"
         @open-sidebar="sidebarOpen = true"
         @delete="deleteActiveConversation"
+        @select-profile="selectProfile"
       />
 
       <section ref="chatScroll" class="chat-scroll" aria-label="对话消息">

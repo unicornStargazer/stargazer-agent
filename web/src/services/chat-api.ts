@@ -1,4 +1,4 @@
-import type { AgentStatus, ApiChatMessage, ChatRequest } from '../types/chat';
+import type { AgentProfile, AgentStatus, ApiChatMessage, ChatRequest } from '../types/chat';
 
 interface ApiErrorBody {
   readonly error?: {
@@ -40,6 +40,14 @@ export async function sendChatMessage(request: ChatRequest): Promise<ApiChatMess
     throw new ChatApiError(502, 'INVALID_RESPONSE', '服务返回了无法识别的消息。');
   }
   return body.message;
+}
+
+export async function loadAgentProfiles(): Promise<readonly AgentProfile[]> {
+  const body = await requestJson<unknown>('/api/profiles');
+  if (!isRecord(body) || !Array.isArray(body.profiles) || !body.profiles.every(isAgentProfile)) {
+    throw new ChatApiError(502, 'INVALID_RESPONSE', '服务端返回了无法识别的 Profile 列表');
+  }
+  return body.profiles;
 }
 
 export async function deleteServerConversation(sessionId: string): Promise<void> {
@@ -92,7 +100,17 @@ function isAgentStatus(value: unknown): value is AgentStatus {
     isRecord(value) &&
     value.ready === true &&
     typeof value.model === 'string' &&
-    value.conversationStorage === 'memory'
+    (value.conversationStorage === 'memory' || value.conversationStorage === 'sqlite') &&
+    (value.defaultProfile === undefined || isAgentProfile(value.defaultProfile))
+  );
+}
+
+function isAgentProfile(value: unknown): value is AgentProfile {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.model === 'string'
   );
 }
 

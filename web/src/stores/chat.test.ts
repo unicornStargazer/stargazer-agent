@@ -100,4 +100,21 @@ describe('chat store', () => {
     expect(store.notice).toBe('服务端拒绝删除');
     expect(store.deletingConversationIds).toEqual([]);
   });
+
+  it('starts a new conversation when selecting another Profile after a message exists', async () => {
+    vi.mocked(sendChatMessage).mockResolvedValueOnce({ role: 'assistant', content: '回复' });
+    const store = useChatStore();
+    store.initialize();
+    const originalConversationId = store.activeConversationId;
+
+    await store.sendMessage('第一条消息');
+    store.selectProfile('detailed');
+
+    expect(store.selectedProfileId).toBe('detailed');
+    expect(store.activeConversationId).not.toBe(originalConversationId);
+    expect(store.activeConversation).toMatchObject({ profileId: 'detailed', messages: [] });
+    expect(store.conversations.find((item) => item.id === originalConversationId)?.profileId).toBe(
+      'default',
+    );
+  });
 });

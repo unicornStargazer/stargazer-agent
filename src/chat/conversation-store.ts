@@ -22,6 +22,17 @@ export interface ConversationStore {
   clear(sessionId: string): Promise<void>;
 }
 
+/**
+ * 为需要按 Profile 隔离上下文的存储实现提供可选元数据能力。
+ *
+ * Profile 不属于聊天消息本身，因此不放进 ChatMessage；调用方在首轮聊天前绑定它，
+ * 后续只能读取相同标识，避免同一历史被不同系统提示重新解释。
+ */
+export interface ConversationProfileStore extends ConversationStore {
+  profileId(sessionId: string): Promise<string | undefined>;
+  bindProfile(sessionId: string, profileId: string): Promise<void>;
+}
+
 /** 表示存储层故障，Web 适配器可据此避免把数据库异常伪装成模型异常。 */
 export class ConversationStoreError extends Error {
   constructor(message: string, options?: ErrorOptions) {

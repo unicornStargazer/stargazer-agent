@@ -15,6 +15,12 @@ import { fileURLToPath } from 'node:url';
 import { ChatAgent, ConversationStoreError } from './chat/index.js';
 import type { ChatMessage } from './chat/index.js';
 import { SqliteConversationStore } from './memory/index.js';
+import {
+  ConversationProfileConflictError,
+  ProfileAgent,
+  UnknownAgentProfileError,
+} from './profiles/index.js';
+import type { AgentProfile } from './profiles/index.js';
 import { OpenAICompatibleChatModel } from './providers/index.js';
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -48,6 +54,7 @@ interface WebAgent {
 
 export interface WebServerOptions {
   readonly agent: WebAgent;
+  readonly profileAgent?: ProfileAgent | undefined;
   readonly modelName?: string | undefined;
   readonly publicDirectory?: string | undefined;
   readonly conversationStorage?: ConversationStorageKind | undefined;
@@ -57,6 +64,7 @@ interface ChatRequestBody {
   readonly sessionId: string;
   readonly requestId: string;
   readonly message: string;
+  readonly profileId: string | undefined;
 }
 
 interface CompletedChatRequest {
@@ -154,7 +162,18 @@ async function handleApiRequest(context: RequestContext, requestUrl: URL): Promi
       ready: true,
       model: options.modelName ?? 'OpenAI compatible model',
       conversationStorage: options.conversationStorage ?? 'memory',
+      defaultProfile: options.profileAgent?.defaultProfile(),
     });
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/profiles') {
+    requireMethod(request, 'GET');
+    if (options.profileAgent === undefined) {
+      sendJson(response, 200, { profiles: [] });
+      return;
+    }
+    sendJson(response, 200, { profiles: options.profileAgent.profiles() });
     return;
   }
 
@@ -225,9 +244,12 @@ async function completeChatRequest(
     return existingRequest.response;
   }
 
-  const pendingResponse = runQueuedChat(context, body.sessionId, body.message).catch(
-    mapChatRequestError,
-  );
+  const pendingResponse = runQueuedChat(
+    context,
+    body.sessionId,
+    body.message,
+    body.profileId,
+  ).catch(mapChatRequestError);
   context.inFlightRequests.set(requestKey, {
     requestMessage: body.message,
     response: pendingResponse,
@@ -242,6 +264,12 @@ async function completeChatRequest(
 }
 
 function mapChatRequestError(error: unknown): never {
+  if (error instanceof UnknownAgentProfileError) {
+    throw new HttpError(400, 'UNKNOWN_PROFILE', '请求的 Agent Profile 不存在');
+  }
+  if (error instanceof ConversationProfileConflictError) {
+    throw new HttpError(409, 'PROFILE_CONFLICT', '会话已绑定其他 Agent Profile');
+  }
   if (error instanceof ConversationStoreError) {
     throw new HttpError(
       503,
@@ -256,6 +284,7 @@ async function runQueuedChat(
   context: RequestContext,
   sessionId: string,
   message: string,
+  profileId: string | undefined,
 ): Promise<ChatMessage> {
   const previousRequest = context.sessionQueues.get(sessionId) ?? Promise.resolve();
   let releaseQueue: (() => void) | undefined;
@@ -266,6 +295,9 @@ async function runQueuedChat(
 
   await previousRequest;
   try {
+    if (context.options.profileAgent !== undefined) {
+      return await context.options.profileAgent.chat(sessionId, profileId, message);
+    }
     return await context.options.agent.chat(sessionId, message);
   } finally {
     releaseQueue?.();
@@ -396,7 +428,11 @@ function validateChatRequest(value: unknown): ChatRequestBody {
   const sessionId = requireIdentifier(body.sessionId, 'sessionId', MAX_SESSION_ID_LENGTH);
   const requestId = requireIdentifier(body.requestId, 'requestId', MAX_REQUEST_ID_LENGTH);
   const message = requireText(body.message, 'message', MAX_MESSAGE_LENGTH);
-  return { sessionId, requestId, message };
+  const profileId =
+    body.profileId === undefined
+      ? undefined
+      : requireIdentifier(body.profileId, 'profileId', MAX_SESSION_ID_LENGTH);
+  return { sessionId, requestId, message, profileId };
 }
 
 function requireIdentifier(value: unknown, fieldName: string, maximumLength: number): string {
@@ -452,7 +488,6 @@ function writeSecurityHeaders(response: ServerResponse): void {
   response.setHeader('X-Frame-Options', 'DENY');
 }
 
-
 /**
  * 主函数，启动 Stargazer Web 服务
  * @returns {Promise<number>} 返回状态码，0 表示成功，2 表示失败
@@ -467,18 +502,35 @@ export async function main(): Promise<number> {
     await mkdir(dirname(databasePath), { recursive: true });
     // 打开 SQLite 对话存储
     const conversationStore = await SqliteConversationStore.open({ databasePath });
-    // 创建聊天代理，配置模型、对话存储和系统提示
+    const profiles = loadAgentProfiles(modelName);
+    const profileAgent = new ProfileAgent({
+      profiles,
+      defaultProfileId: profiles[0]!.id,
+      conversationStore,
+      createModel: (profile) =>
+        new OpenAICompatibleChatModel({
+          apiKey: requireEnvironment('OPENAI_API_KEY'),
+          model: profile.model,
+          baseUrl: process.env.OPENAI_BASE_URL,
+        }),
+    });
+    // 保留默认 Agent 以兼容未启用 Profile 的嵌入式 WebServer 调用。
     const agent = new ChatAgent({
       model: new OpenAICompatibleChatModel({
-        apiKey: requireEnvironment('OPENAI_API_KEY'), // 从环境变量获取 API 密钥
-        model: modelName, // 使用指定的模型
-        baseUrl: process.env.OPENAI_BASE_URL, // 可选的基础 URL
+        apiKey: requireEnvironment('OPENAI_API_KEY'),
+        model: modelName,
+        baseUrl: process.env.OPENAI_BASE_URL,
       }),
-      conversationStore, // 使用 SQLite 存储对话
-      systemPrompt: process.env.STARGAZER_SYSTEM_PROMPT, // 系统提示词
+      conversationStore,
+      systemPrompt: process.env.STARGAZER_SYSTEM_PROMPT,
     });
     // 创建 Web 服务器，配置代理、模型名称和存储方式
-    const server = createWebServer({ agent, modelName, conversationStorage: 'sqlite' });
+    const server = createWebServer({
+      agent,
+      profileAgent,
+      modelName,
+      conversationStorage: 'sqlite',
+    });
     // 监听服务器关闭事件，确保正确关闭对话存储
     server.once('close', () => {
       void conversationStore.close();
@@ -523,6 +575,88 @@ function resolveDatabasePath(): string {
 }
 
 /**
+ * 加载代理配置文件
+ * @param defaultModel 默认使用的模型
+ * @returns 返回只读的代理配置文件数组
+ */
+function loadAgentProfiles(defaultModel: string): readonly AgentProfile[] {
+  // 从环境变量中获取原始配置字符串，并去除首尾空格
+  const rawProfiles = process.env.STARGAZER_AGENT_PROFILES?.trim();
+  // 如果没有配置，返回默认配置
+  if (!rawProfiles) {
+    return [
+      {
+        id: 'default',
+        name: '默认助手',
+        model: defaultModel,
+        systemPrompt: process.env.STARGAZER_SYSTEM_PROMPT,
+      },
+    ];
+  }
+
+  let value: unknown; // 用于存储解析后的值
+  try {
+    // 尝试解析JSON字符串
+    value = JSON.parse(rawProfiles) as unknown;
+  } catch {
+    // 如果解析失败，抛出错误
+    throw new Error('STARGAZER_AGENT_PROFILES 必须是 JSON 数组');
+  }
+  // 检查解析后的值是否为数组
+  if (!Array.isArray(value)) {
+    throw new Error('STARGAZER_AGENT_PROFILES 必须是 JSON 数组');
+  }
+  // 将每个数组项解析为AgentProfile对象
+  return value.map((item) => parseAgentProfile(item));
+}
+
+/**
+ * 解析代理档案对象的函数
+ * @param value - 未知类型的输入值，期望是一个对象
+ * @returns 返回一个格式化的 AgentProfile 对象
+ * @throws 当输入值不符合要求时抛出错误
+ */
+function parseAgentProfile(value: unknown): AgentProfile {
+  // 检查输入值是否为非空对象且不是数组
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Agent Profile 必须是对象');
+  }
+  // 将输入值断言为 Record<string, unknown> 类型
+  const profile = value as Record<string, unknown>;
+  // 使用 requireProfileText 函数获取必需的文本字段
+  const id = requireProfileText(profile.id, 'id');
+  const name = requireProfileText(profile.name, 'name');
+  const model = requireProfileText(profile.model, 'model');
+  // 使用 optionalProfileText 函数获取可选的文本字段
+  const systemPrompt = optionalProfileText(profile.systemPrompt, 'systemPrompt');
+  // 获取历史记录限制值
+  const historyLimit = profile.historyLimit;
+  // 验证 historyLimit 的有效性（如果存在）
+  if (
+    historyLimit !== undefined &&
+    (typeof historyLimit !== 'number' || !Number.isSafeInteger(historyLimit) || historyLimit < 1)
+  ) {
+    throw new Error('Agent Profile 的 historyLimit 必须是大于零的整数');
+  }
+  // 返回处理后的档案对象
+  return { id, name, model, systemPrompt, historyLimit };
+}
+
+function requireProfileText(value: unknown, fieldName: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Agent Profile 的 ${fieldName} 不能为空`);
+  }
+  return value.trim();
+}
+
+function optionalProfileText(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireProfileText(value, fieldName);
+}
+
+/**
  * 获取并验证环境变量值
  * @param name 环境变量名称
  * @returns 环境变量的值（去除首尾空格）
@@ -530,7 +664,8 @@ function resolveDatabasePath(): string {
  */
 function requireEnvironment(name: string): string {
   const value = process.env[name]?.trim(); // 获取环境变量并去除首尾空格
-  if (!value) { // 检查环境变量是否存在或为空
+  if (!value) {
+    // 检查环境变量是否存在或为空
     throw new Error(`${name} 不能为空`); // 如果为空则抛出错误
   }
   return value; // 返回环境变量的值

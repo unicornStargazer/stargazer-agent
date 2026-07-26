@@ -10,6 +10,7 @@ import {
 
 const storedConversation: Conversation = {
   id: 'session-existing',
+  profileId: 'default',
   title: '历史对话',
   createdAt: '2026-07-25T08:00:00.000Z',
   updatedAt: '2026-07-25T08:01:00.000Z',

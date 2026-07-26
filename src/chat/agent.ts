@@ -31,13 +31,12 @@ export class ChatAgent {
     this.historyLimit = normalizeHistoryLimit(options.historyLimit);
   }
 
-
-/**
- * 聊天方法，处理用户输入并返回助手的回复
- * @param sessionId 会话ID，用于标识当前对话
- * @param text 用户输入的文本内容
- * @returns 返回一个Promise，解析为ChatMessage类型的助手回复消息
- */
+  /**
+   * 聊天方法，处理用户输入并返回助手的回复
+   * @param sessionId 会话ID，用于标识当前对话
+   * @param text 用户输入的文本内容
+   * @returns 返回一个Promise，解析为ChatMessage类型的助手回复消息
+   */
   async chat(sessionId: string, text: string): Promise<ChatMessage> {
     // 创建用户消息对象
     const userMessage = createChatMessage('user', text);
@@ -51,6 +50,25 @@ export class ChatAgent {
     await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
     // 返回助手消息
     return assistantMessage;
+  }
+
+  /** 逐段返回模型文本，并仅在正常结束后持久化完整轮次。 */
+  async *chatStream(sessionId: string, text: string): AsyncGenerator<string> {
+    const userMessage = createChatMessage('user', text);
+    const requestMessages = await this.buildRequest(sessionId, userMessage);
+    if (this.model.stream === undefined) {
+      const response = await this.chat(sessionId, text);
+      yield response.content;
+      return;
+    }
+    let content = '';
+    for await (const chunk of this.model.stream(requestMessages)) {
+      if (!chunk) continue;
+      content += chunk;
+      yield chunk;
+    }
+    const assistantMessage = createChatMessage('assistant', content);
+    await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
   }
 
   /** 返回不包含每轮系统提示的完整服务端会话历史。 */
