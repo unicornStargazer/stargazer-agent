@@ -470,6 +470,10 @@ void runQueuedChat;
 void requireMatchingRequestMessage;
 void rememberCompletedRequest;
 
+/**
+ * 主函数，异步执行并返回状态码
+ * @returns {Promise<number>} 返回执行状态码，0表示成功，2表示失败
+ */
 export async function main(): Promise<number> {
   try {
     // 从环境变量中获取模型名称
@@ -480,7 +484,9 @@ export async function main(): Promise<number> {
     await mkdir(dirname(databasePath), { recursive: true });
     // 打开 SQLite 对话存储
     const conversationStore = await SqliteConversationStore.open({ databasePath });
+    // 加载代理配置文件
     const profiles = await loadAgentProfiles(modelName);
+    // 创建配置文件代理实例，设置默认配置和模型创建函数
     const profileAgent = new ProfileAgent({
       profiles,
       defaultProfileId: profiles[0]!.id,
@@ -558,15 +564,21 @@ function resolveDatabasePath(): string {
  * @returns 返回只读的代理配置文件数组
  */
 async function loadAgentProfiles(defaultModel: string): Promise<readonly AgentProfile[]> {
+  // 加载已配置的代理配置文件
   const configuredProfiles = loadConfiguredAgentProfiles(defaultModel);
+  // 获取技能目录路径，并去除首尾空格
   const skillsDirectory = process.env.STARGAZER_SKILLS_DIR?.trim();
+  // 如果没有设置技能目录，直接返回已配置的代理配置文件
   if (!skillsDirectory) {
     return configuredProfiles;
   }
+  // 加载技能相关的代理配置文件
+  // 解析技能目录的绝对路径，并传入默认模型
   const skillProfiles = await loadSkillProfiles({
     directory: resolve(process.cwd(), skillsDirectory),
     defaultModel,
   });
+  // 合并已配置的代理配置文件和技能相关的代理配置文件
   return mergeAgentProfiles(configuredProfiles, skillProfiles);
 }
 
