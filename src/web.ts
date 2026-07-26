@@ -14,7 +14,11 @@ import { fileURLToPath } from 'node:url';
 
 import { ChatAgent, ConversationStoreError } from './chat/index.js';
 import type { ChatMessage } from './chat/index.js';
-import { ConversationService } from './application/conversation-service.js';
+import {
+  ConversationService,
+  RequestConflictError,
+  SessionBusyError,
+} from './application/conversation-service.js';
 import { HttpError, sendError, sendJson, writeSecurityHeaders } from './http/http-error.js';
 import {
   readJsonBody,
@@ -110,7 +114,8 @@ export function createWebServer(options: WebServerOptions): Server {
 function createConversationAgent(options: WebServerOptions) {
   return {
     chat: (sessionId: string, profileId: string | undefined, message: string) =>
-      options.profileAgent?.chat(sessionId, profileId, message) ?? options.agent.chat(sessionId, message),
+      options.profileAgent?.chat(sessionId, profileId, message) ??
+      options.agent.chat(sessionId, message),
     async *chatStream(sessionId: string, profileId: string | undefined, message: string) {
       if (options.profileAgent !== undefined) {
         yield* options.profileAgent.chatStream(sessionId, profileId, message);
@@ -318,7 +323,14 @@ function mapStreamError(error: unknown): { readonly code: string; readonly messa
 }
 
 async function deleteConversation(context: RequestContext, sessionId: string): Promise<void> {
-  await context.conversationService.clear(sessionId);
+  try {
+    await context.conversationService.clear(sessionId);
+  } catch (error) {
+    if (error instanceof SessionBusyError) {
+      throw new HttpError(409, 'SESSION_BUSY', error.message);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -382,6 +394,9 @@ async function completeChatRequest(
 }
 
 function mapChatRequestError(error: unknown): never {
+  if (error instanceof RequestConflictError) {
+    throw new HttpError(409, 'REQUEST_CONFLICT', error.message);
+  }
   if (error instanceof UnknownAgentProfileError) {
     throw new HttpError(400, 'UNKNOWN_PROFILE', '请求的 Agent Profile 不存在');
   }

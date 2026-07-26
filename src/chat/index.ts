@@ -12,6 +12,6 @@ export {
 } from './conversation-store.js';
 export type { ConversationProfileStore, ConversationStore } from './conversation-store.js';
 export { InMemoryConversationStore } from './in-memory-conversation-store.js';
-export { createChatMessage } from './models.js';
-export type { ChatMessage, ChatRole } from './models.js';
-export type { ChatModel } from './port.js';
+export { createChatMessage, createToolCallMessage, createToolResultMessage } from './models.js';
+export type { ChatMessage, ChatRole, ToolCall } from './models.js';
+export type { ChatModel, ToolCallingCompletion } from './port.js';

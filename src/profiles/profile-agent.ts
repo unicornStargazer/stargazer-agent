@@ -8,6 +8,7 @@ import { ChatAgent } from '../chat/agent.js';
 import type { ConversationProfileStore } from '../chat/conversation-store.js';
 import type { ChatMessage } from '../chat/models.js';
 import type { ChatModel } from '../chat/port.js';
+import type { ToolRegistry } from '../tools/tool-registry.js';
 import type { AgentProfile, AgentProfileSummary } from './agent-profile.js';
 import { toAgentProfileSummary } from './agent-profile.js';
 
@@ -30,6 +31,7 @@ export interface ProfileAgentOptions {
   readonly defaultProfileId: string;
   readonly conversationStore: ConversationProfileStore;
   readonly createModel: (profile: AgentProfile) => ChatModel;
+  readonly tools?: ToolRegistry | undefined;
 }
 
 export class ProfileAgent {
@@ -38,6 +40,7 @@ export class ProfileAgent {
   private readonly defaultProfileId: string;
   private readonly conversationStore: ConversationProfileStore;
   private readonly createModel: (profile: AgentProfile) => ChatModel;
+  private readonly tools: ToolRegistry | undefined;
 
   constructor(options: ProfileAgentOptions) {
     this.profilesById = createProfileMap(options.profiles);
@@ -47,6 +50,7 @@ export class ProfileAgent {
     this.defaultProfileId = options.defaultProfileId;
     this.conversationStore = options.conversationStore;
     this.createModel = options.createModel;
+    this.tools = options.tools;
   }
 
   profiles(): readonly AgentProfileSummary[] {
@@ -110,6 +114,7 @@ export class ProfileAgent {
       conversationStore: this.conversationStore,
       systemPrompt: profile.systemPrompt,
       historyLimit: profile.historyLimit,
+      tools: this.tools,
     });
     this.agentsByProfileId.set(profile.id, agent);
     return agent;

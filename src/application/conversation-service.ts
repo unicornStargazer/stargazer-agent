@@ -24,7 +24,7 @@ export interface ConversationAgent {
 
 export class RequestConflictError extends Error {
   constructor() {
-    super('requestId 已用于其他消息');
+    super('requestId 已用于其他消息。');
     this.name = 'RequestConflictError';
   }
 }
@@ -55,11 +55,11 @@ export class ConversationService {
     private readonly maximumCompletedRequests = 500,
   ) {}
 
-/**
- * 异步处理聊天命令的方法
- * @param command 包含会话命令信息的对象，包括会话ID、用户档案ID和消息内容
- * @returns 返回一个Promise，解析为ChatMessage类型的聊天消息
- */
+  /**
+   * 异步处理聊天命令的方法
+   * @param command 包含会话命令信息的对象，包括会话ID、用户档案ID和消息内容
+   * @returns 返回一个Promise，解析为ChatMessage类型的聊天消息
+   */
   async chat(command: ConversationCommand): Promise<ChatMessage> {
     // 获取或创建一个会话，如果不存在则使用提供的回调函数创建
     // 回调函数中执行排队操作，确保会话处理的顺序性
@@ -72,12 +72,12 @@ export class ConversationService {
     );
   }
 
-/**
- * 流式处理对话命令，支持并发请求处理和缓存机制
- * @param command 对话命令对象，包含会话ID、配置ID和消息内容
- * @param onChunk 处理每个数据块的回调函数
- * @returns Promise<void>
- */
+  /**
+   * 流式处理对话命令，支持并发请求处理和缓存机制
+   * @param command 对话命令对象，包含会话ID、配置ID和消息内容
+   * @param onChunk 处理每个数据块的回调函数
+   * @returns Promise<void>
+   */
   async stream(command: ConversationCommand, onChunk: (chunk: string) => void): Promise<void> {
     // 生成请求的唯一标识
     const requestKey = this.requestKey(command);

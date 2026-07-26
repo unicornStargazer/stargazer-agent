@@ -81,4 +81,62 @@ describe('OpenAICompatibleChatModel', () => {
 
     expect(chunks).toEqual(['你好']);
   });
+
+  it('maps registered tools and provider tool calls without exposing them as plain text', async () => {
+    const fetchImplementation: typeof fetch = (_input, init) => {
+      const requestBody = init?.body;
+      if (typeof requestBody !== 'string') {
+        throw new Error('Request body must be JSON text.');
+      }
+      expect(JSON.parse(requestBody)).toMatchObject({
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'lookup_weather',
+              parameters: { type: 'object' },
+            },
+          },
+        ],
+      });
+      return Promise.resolve(
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'call-1',
+                    type: 'function',
+                    function: { name: 'lookup_weather', arguments: '{"city":"Shanghai"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+    };
+    const model = new OpenAICompatibleChatModel(
+      { apiKey: 'test-key', model: 'test-model' },
+      fetchImplementation,
+    );
+
+    await expect(
+      model.completeWithTools(
+        [createChatMessage('user', 'Weather?')],
+        [
+          {
+            name: 'lookup_weather',
+            description: 'Looks up a weather forecast.',
+            parameters: { type: 'object' },
+          },
+        ],
+      ),
+    ).resolves.toEqual({
+      content: '',
+      toolCalls: [{ id: 'call-1', name: 'lookup_weather', arguments: '{"city":"Shanghai"}' }],
+    });
+  });
 });

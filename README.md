@@ -2,7 +2,7 @@
 
 Stargazer Agent 是一个可快速运行的 TypeScript 文本对话 Agent，提供浏览器工作台和 CLI 两种入口。Web 服务使用 SQLite 保存会话历史，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。
 
-当前只实现“连续文本对话”这个核心能力，不包含 Tool、Policy、审批、长期记忆、流式响应、多 Agent 或复杂运行时。
+当前实现了连续文本对话、Profile 化系统提示、SQLite 会话记忆、流式文本输出，以及受控 Tool 调用的核心编排。默认不注册任何 Tool；不会开放文件系统、命令执行或网络访问等高风险能力。Policy、审批、长期记忆、多 Agent 和复杂运行时仍不在当前范围内。
 
 ## 环境
 
@@ -98,6 +98,7 @@ src/
 ├── chat/          消息、模型与会话存储契约、内存替身、ChatAgent 编排
 ├── memory/        SQLite 会话存储基础设施实现
 ├── providers/     OpenAI 兼容客户端和离线 Fake Model
+├── tools/         Tool 契约、白名单注册表与受控执行边界
 ├── cli.ts         命令行参数、环境变量和终端交互
 └── web.ts         Web API、静态资源服务与环境配置
 web/
@@ -129,6 +130,26 @@ CLI -> ChatAgent -> InMemoryConversationStore
 ```
 
 `chat` 不依赖 HTTP 或数据库，`memory` 只实现会话存储，`providers` 不保存会话，`cli` 不保存密钥。这些边界使后续增加其他模型供应商或存储实现时不会影响对话核心。
+
+## Tool 扩展
+
+业务能力通过服务端代码显式注册。模型只能请求已注册的 Tool，不能自行获得任意文件、命令或网络权限。每轮工具调用有默认上限，Tool 的异常和无效参数会转换为本轮模型可处理的结果，最终会话历史只保存用户消息和最终回答。
+
+```ts
+import { ChatAgent } from './src/chat/index.js';
+import { ToolRegistry } from './src/tools/index.js';
+
+const tools = new ToolRegistry([
+  {
+    name: 'lookup_order',
+    description: 'Returns the status for one order number.',
+    parameters: { type: 'object', properties: { orderId: { type: 'string' } } },
+    execute: async (input) => JSON.stringify(await loadOrderStatus(input)),
+  },
+]);
+
+const agent = new ChatAgent({ model, tools });
+```
 
 ## 已知边界
 

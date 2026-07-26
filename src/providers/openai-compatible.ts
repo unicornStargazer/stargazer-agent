@@ -5,7 +5,8 @@
  * 流式响应或工具调用。允许依赖 Node.js 原生 fetch 和 chat 消息类型。
  */
 
-import type { ChatMessage, ChatModel } from '../chat/index.js';
+import type { ChatMessage, ChatModel, ToolCall, ToolCallingCompletion } from '../chat/index.js';
+import type { ToolDefinition } from '../tools/index.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -61,6 +62,20 @@ export class OpenAICompatibleChatModel implements ChatModel {
     }
     // 解析响应并提取助手文本后返回
     return extractAssistantText(await parseJsonResponse(response));
+  }
+
+  async completeWithTools(
+    messages: readonly ChatMessage[],
+    tools: readonly ToolDefinition[],
+  ): Promise<ToolCallingCompletion> {
+    if (messages.length === 0) {
+      throw new Error('At least one message is required to call the model.');
+    }
+    const response = await this.requestCompletion(messages, false, tools);
+    if (!response.ok) {
+      throw new OpenAICompatibleError(`Model service returned HTTP ${response.status}`);
+    }
+    return extractToolCallingCompletion(await parseJsonResponse(response));
   }
 
   /**
@@ -121,6 +136,7 @@ export class OpenAICompatibleChatModel implements ChatModel {
   private async requestCompletion(
     messages: readonly ChatMessage[],
     stream = false,
+    tools: readonly ToolDefinition[] = [],
   ): Promise<Response> {
     // 创建一个AbortController实例用于控制请求超时
     const controller = new AbortController();
@@ -138,12 +154,9 @@ export class OpenAICompatibleChatModel implements ChatModel {
         // 请求体，包含模型名称和消息列表
         body: JSON.stringify({
           model: this.config.model, // 使用的模型名称
-          messages: messages.map((message) => ({
-            // 转换消息格式
-            role: message.role, // 消息角色
-            content: message.content, // 消息内容
-          })),
+          messages: messages.map(toProviderMessage),
           ...(stream ? { stream: true } : {}),
+          ...(tools.length > 0 ? { tools: tools.map(toProviderTool) } : {}),
         }),
         signal: controller.signal, // 绑定中止信号
       });
@@ -190,6 +203,70 @@ function streamText(value: string): string | undefined {
   }
 }
 
+function toProviderMessage(message: ChatMessage): Record<string, unknown> {
+  if (message.role === 'tool') {
+    return {
+      role: 'tool',
+      content: message.content,
+      tool_call_id: message.toolCallId,
+    };
+  }
+  if (message.toolCalls !== undefined) {
+    return {
+      role: 'assistant',
+      content: message.content || null,
+      tool_calls: message.toolCalls.map((toolCall) => ({
+        id: toolCall.id,
+        type: 'function',
+        function: { name: toolCall.name, arguments: toolCall.arguments },
+      })),
+    };
+  }
+  return { role: message.role, content: message.content };
+}
+
+function toProviderTool(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  };
+}
+
+function extractToolCallingCompletion(responseBody: unknown): ToolCallingCompletion {
+  const message = extractFirstChoiceMessage(responseBody);
+  const content = typeof message.content === 'string' ? message.content.trim() : '';
+  if (message.tool_calls === undefined) {
+    if (!content) {
+      throw new OpenAICompatibleError('Model response does not contain text or tool calls.');
+    }
+    return { content, toolCalls: [] };
+  }
+  const toolCalls = requireArray(message.tool_calls, 'Model tool calls are invalid.').map(
+    extractToolCall,
+  );
+  return { content, toolCalls };
+}
+
+function extractToolCall(value: unknown): ToolCall {
+  const toolCall = requireRecord(value);
+  const functionCall = requireRecord(toolCall.function);
+  if (
+    typeof toolCall.id !== 'string' ||
+    !toolCall.id.trim() ||
+    toolCall.type !== 'function' ||
+    typeof functionCall.name !== 'string' ||
+    !functionCall.name.trim() ||
+    typeof functionCall.arguments !== 'string'
+  ) {
+    throw new OpenAICompatibleError('Model tool call has an invalid format.');
+  }
+  return { id: toolCall.id, name: functionCall.name, arguments: functionCall.arguments };
+}
+
 function validateConfig(config: OpenAICompatibleConfig): ValidatedConfig {
   const apiKey = normalizeRequiredText(config.apiKey, 'OPENAI_API_KEY 不能为空');
   const model = normalizeRequiredText(config.model, '模型名称不能为空');
@@ -225,18 +302,22 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
 }
 
 function extractAssistantText(responseBody: unknown): string {
+  const message = extractFirstChoiceMessage(responseBody);
+  const content = message.content;
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new OpenAICompatibleError('模型响应不包含非空文本内容');
+  }
+  return content.trim();
+}
+
+function extractFirstChoiceMessage(responseBody: unknown): Record<string, unknown> {
   const body = requireRecord(responseBody);
   const choices = requireArray(body.choices, '模型响应缺少 choices');
   const firstChoice = choices.at(0);
   if (firstChoice === undefined) {
     throw new OpenAICompatibleError('模型响应缺少 choices');
   }
-  const message = requireRecord(requireRecord(firstChoice).message);
-  const content = message.content;
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new OpenAICompatibleError('模型响应不包含非空文本内容');
-  }
-  return content.trim();
+  return requireRecord(requireRecord(firstChoice).message);
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {
