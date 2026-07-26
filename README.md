@@ -57,7 +57,7 @@ npm run web
 
 该命令先生成 `web/dist`，再启动同源 Web 服务。浏览器访问 `http://127.0.0.1:3000`；可通过 `HOST` 和 `PORT` 环境变量修改监听地址和端口。
 
-页面提供多会话导航、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，模型上下文由服务端 SQLite 保存；删除会话时会同时清除两侧记录。
+页面提供流式回复、多会话导航、会话搜索与重命名、Markdown 导出、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，并从服务端恢复已知会话的 SQLite 历史；删除会话时会同时清除两侧记录。
 
 Profile 由服务端环境变量 `STARGAZER_AGENT_PROFILES` 管理。未设置时自动使用与既有 `OPENAI_MODEL`、`STARGAZER_SYSTEM_PROMPT` 相同的默认 Profile。工作台切换 Profile 会新建会话；服务端也会把 Profile 标识持久化到 SQLite，拒绝把已有会话改绑到另一个 Profile。
 
@@ -182,7 +182,7 @@ const agent = new ChatAgent({ model, tools });
 ## 已知边界
 
 - Web 会话持久化限定为单进程 SQLite，不支持多进程共享写入或用户账号隔离。
-- 只支持非流式纯文本回复。
+- Web 当前只支持文本消息，不包含附件、语音、Tool 调用轨迹或停止生成协议。
 - Web API 会串行处理同一会话的请求，但不自动重试；可在创建 Agent 时设置历史消息窗口。
 
 这些是当前最小可用版本的主动取舍；后续能力应基于真实使用场景逐项加入。

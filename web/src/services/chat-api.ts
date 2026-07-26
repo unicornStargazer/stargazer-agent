@@ -1,4 +1,10 @@
-import type { AgentProfile, AgentStatus, ApiChatMessage, ChatRequest } from '../types/chat';
+import type {
+  AgentProfile,
+  AgentStatus,
+  ApiChatMessage,
+  ApiConversationMessage,
+  ChatRequest,
+} from '../types/chat';
 
 interface ApiErrorBody {
   readonly error?: {
@@ -9,6 +15,10 @@ interface ApiErrorBody {
 
 interface ChatResponseBody {
   readonly message?: unknown;
+}
+
+interface ConversationHistoryBody {
+  readonly messages?: unknown;
 }
 
 export class ChatApiError extends Error {
@@ -42,6 +52,18 @@ export async function sendChatMessage(request: ChatRequest): Promise<ApiChatMess
   return body.message;
 }
 
+export async function loadConversationHistory(
+  sessionId: string,
+): Promise<readonly ApiConversationMessage[]> {
+  const body = await requestJson<ConversationHistoryBody>(
+    `/api/history?sessionId=${encodeURIComponent(sessionId)}`,
+  );
+  if (!Array.isArray(body.messages) || !body.messages.every(isConversationMessage)) {
+    throw new ChatApiError(502, 'INVALID_RESPONSE', '服务端返回了无法识别的会话历史。');
+  }
+  return body.messages;
+}
+
 export async function streamChatMessage(
   request: ChatRequest,
   onChunk: (content: string) => void,
@@ -71,27 +93,47 @@ export async function streamChatMessage(
   try {
     while (true) {
       const result = await reader.read();
-      if (result.done) return;
+      if (result.done) {
+        return;
+      }
       buffer += decoder.decode(result.value, { stream: true });
       const events = buffer.split('\n\n');
       buffer = events.pop() ?? '';
       for (const event of events) {
-        const type = event.match(/^event: (.+)$/m)?.[1];
-        const data = event.match(/^data: (.+)$/m)?.[1];
-        if (!type || !data) continue;
-        const value = JSON.parse(data) as unknown;
-        if (type === 'chunk' && isRecord(value) && typeof value.content === 'string')
+        const { type, value } = parseServerSentEvent(event, response.status);
+        if (type === undefined) {
+          continue;
+        }
+        if (type === 'chunk' && isRecord(value) && typeof value.content === 'string') {
           onChunk(value.content);
-        if (type === 'error' && isRecord(value))
+        }
+        if (type === 'error' && isRecord(value)) {
           throw new ChatApiError(
             502,
             typeof value.code === 'string' ? value.code : 'MODEL_UNAVAILABLE',
             typeof value.message === 'string' ? value.message : '模型暂时不可用',
           );
+        }
       }
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+function parseServerSentEvent(
+  event: string,
+  responseStatus: number,
+): { readonly type: string | undefined; readonly value: unknown } {
+  const type = event.match(/^event: (.+)$/m)?.[1];
+  const data = event.match(/^data: (.+)$/m)?.[1];
+  if (type === undefined || data === undefined) {
+    return { type: undefined, value: undefined };
+  }
+  try {
+    return { type, value: JSON.parse(data) as unknown };
+  } catch {
+    throw new ChatApiError(responseStatus, 'INVALID_RESPONSE', '服务返回了无效的流式事件。');
   }
 }
 
@@ -145,6 +187,14 @@ function isAssistantMessage(value: unknown): value is ApiChatMessage {
     value.role === 'assistant' &&
     typeof value.content === 'string' &&
     !!value.content
+  );
+}
+
+function isConversationMessage(value: unknown): value is ApiConversationMessage {
+  return (
+    isRecord(value) &&
+    (value.role === 'user' || value.role === 'assistant') &&
+    typeof value.content === 'string'
   );
 }
 

@@ -9,7 +9,7 @@ export interface ConversationMessage {
 
 export interface Conversation {
   readonly id: string;
-  readonly profileId: string;
+  profileId: string;
   title: string;
   readonly createdAt: string;
   updatedAt: string;
@@ -48,6 +48,13 @@ export interface ApiChatMessage {
   readonly role: 'assistant';
   readonly content: string;
 }
+
+export interface ApiConversationMessage {
+  readonly role: ConversationRole;
+  readonly content: string;
+}
+
+export type ProfileLoadState = 'loading' | 'ready' | 'empty' | 'error';
 
 export interface ChatRequest {
   readonly sessionId: string;

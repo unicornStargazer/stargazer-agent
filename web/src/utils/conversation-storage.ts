@@ -5,6 +5,15 @@ export const ACTIVE_CONVERSATION_STORAGE_KEY = 'stargazer.chat.active.v1';
 
 const MAX_STORED_CONVERSATIONS = 50;
 
+interface StoredConversation {
+  readonly id: string;
+  readonly profileId?: string | undefined;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly messages: ConversationMessage[];
+}
+
 export interface StoredWorkspace {
   readonly conversations: Conversation[];
   readonly activeConversationId: string | undefined;
@@ -50,13 +59,13 @@ function parseStoredConversations(value: string | null): Conversation[] {
   }
 }
 
-function isStoredConversation(value: unknown): value is Conversation {
+function isStoredConversation(value: unknown): value is StoredConversation {
   if (!isRecord(value)) {
     return false;
   }
   return (
     typeof value.id === 'string' &&
-    typeof value.profileId === 'string' &&
+    (value.profileId === undefined || typeof value.profileId === 'string') &&
     typeof value.title === 'string' &&
     typeof value.createdAt === 'string' &&
     typeof value.updatedAt === 'string' &&
@@ -78,10 +87,10 @@ function isStoredMessage(value: unknown): value is ConversationMessage {
   );
 }
 
-function cloneConversation(conversation: Conversation): Conversation {
+function cloneConversation(conversation: StoredConversation): Conversation {
   return {
     id: conversation.id,
-    profileId: conversation.profileId,
+    profileId: conversation.profileId?.trim() || 'default',
     title: conversation.title,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,

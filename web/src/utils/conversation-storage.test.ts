@@ -40,6 +40,16 @@ describe('conversation storage', () => {
     });
   });
 
+  it('keeps conversations created before Profile support', () => {
+    const legacyConversation: Partial<Conversation> = { ...storedConversation };
+    delete legacyConversation.profileId;
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify([legacyConversation]));
+
+    expect(loadWorkspace().conversations).toEqual([
+      { ...storedConversation, profileId: 'default' },
+    ]);
+  });
+
   it('persists a bounded workspace using the compatible schema', () => {
     const conversations = Array.from({ length: 55 }, (_, index) => ({
       ...storedConversation,

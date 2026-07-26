@@ -7,10 +7,10 @@ import ChatEmptyState from './components/chat/ChatEmptyState.vue';
 import ChatMessages from './components/chat/ChatMessages.vue';
 import ChatHeader from './components/layout/ChatHeader.vue';
 import ChatSidebar from './components/layout/ChatSidebar.vue';
-import { loadAgentProfiles } from './services/chat-api';
-import type { AgentProfile } from './types/chat';
+import { useAgentProfiles } from './composables/useAgentProfiles';
 import { useAgentStatus } from './composables/useAgentStatus';
 import { useChatStore } from './stores/chat';
+import { downloadConversationMarkdown } from './utils/conversation-export';
 
 interface ComposerExposed {
   focus(): void;
@@ -28,9 +28,10 @@ const {
   notice,
   pendingRequests,
   sortedConversations,
+  syncingConversationIds,
 } = storeToRefs(chatStore);
-const { status } = useAgentStatus();
-const profiles = ref<readonly AgentProfile[]>([]);
+const { status, agentStatus } = useAgentStatus();
+const { profiles, state: profileState, error: profileError, refreshProfiles } = useAgentProfiles();
 
 const sidebarOpen = ref(false);
 const draft = ref('');
@@ -45,6 +46,16 @@ const activeDeleting = computed(() => {
   return conversationId !== undefined && deletingConversationIds.value.includes(conversationId);
 });
 const activeMessageCount = computed(() => activeConversation.value?.messages.length ?? 0);
+const activeContentLength = computed(
+  () =>
+    activeConversation.value?.messages.reduce(
+      (totalLength, message) => totalLength + message.content.length,
+      0,
+    ) ?? 0,
+);
+const activeProfile = computed(() =>
+  profiles.value.find((profile) => profile.id === activeConversation.value?.profileId),
+);
 
 function createConversation(): void {
   chatStore.createNewConversation();
@@ -71,6 +82,17 @@ function deleteActiveConversation(): void {
   }
 }
 
+function renameConversation(conversationId: string, title: string): void {
+  chatStore.renameConversation(conversationId, title);
+}
+
+function exportActiveConversation(): void {
+  const conversation = activeConversation.value;
+  if (conversation !== undefined && conversation.messages.length > 0 && !activeBusy.value) {
+    downloadConversationMarkdown(conversation, activeProfile.value);
+  }
+}
+
 function sendMessage(): void {
   const message = draft.value.trim();
   if (!message || activeBusy.value) {
@@ -87,6 +109,8 @@ function choosePrompt(prompt: string): void {
 
 function selectProfile(profileId: string): void {
   chatStore.selectProfile(profileId);
+  draft.value = '';
+  focusComposer();
 }
 
 function focusComposer(): void {
@@ -117,10 +141,31 @@ function scrollMessagesToBottom(smooth = true): void {
 }
 
 watch(
-  [activeConversationId, activeMessageCount, activeBusy],
+  [activeConversationId, activeMessageCount, activeContentLength, activeBusy],
   ([currentConversationId], [previousConversationId]) => {
     scrollMessagesToBottom(currentConversationId === previousConversationId);
   },
+);
+
+watch(
+  [profiles, agentStatus],
+  ([availableProfiles, currentStatus]) => {
+    chatStore.configureProfiles(
+      availableProfiles,
+      currentStatus?.defaultProfile?.id ?? availableProfiles[0]?.id,
+    );
+  },
+  { immediate: true },
+);
+
+watch(
+  activeConversationId,
+  (conversationId) => {
+    if (conversationId !== undefined) {
+      void chatStore.syncConversationHistory(conversationId);
+    }
+  },
+  { immediate: true },
 );
 
 watch(notice, (message) => {
@@ -132,17 +177,6 @@ watch(notice, (message) => {
 
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown);
-  void loadAgentProfiles()
-    .then((loadedProfiles) => {
-      profiles.value = loadedProfiles;
-      const currentProfileExists = loadedProfiles.some(
-        (profile) => profile.id === chatStore.selectedProfileId,
-      );
-      if (!currentProfileExists && loadedProfiles[0] !== undefined) {
-        chatStore.selectProfile(loadedProfiles[0].id);
-      }
-    })
-    .catch(() => undefined);
   focusComposer();
 });
 
@@ -167,11 +201,13 @@ onUnmounted(() => {
       :active-conversation-id="activeConversationId"
       :pending-conversation-ids="pendingConversationIds"
       :deleting-conversation-ids="deletingConversationIds"
+      :syncing-conversation-ids="syncingConversationIds"
       :status="status"
       @close="closeSidebar"
       @create="createConversation"
       @select="selectConversation"
       @delete="deleteConversation"
+      @rename="renameConversation"
     />
 
     <main class="main-panel">
@@ -181,9 +217,14 @@ onUnmounted(() => {
         :deleting="activeDeleting"
         :profiles="profiles"
         :selected-profile-id="chatStore.selectedProfileId"
+        :profile-state="profileState"
+        :profile-error="profileError"
+        :export-disabled="activeMessageCount === 0 || activeBusy"
         @open-sidebar="sidebarOpen = true"
         @delete="deleteActiveConversation"
+        @export="exportActiveConversation"
         @select-profile="selectProfile"
+        @retry-profiles="refreshProfiles"
       />
 
       <section ref="chatScroll" class="chat-scroll" aria-label="对话消息">

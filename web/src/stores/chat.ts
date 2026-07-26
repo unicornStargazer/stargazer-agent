@@ -1,8 +1,15 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
-import { deleteServerConversation, streamChatMessage } from '../services/chat-api';
+import {
+  ChatApiError,
+  deleteServerConversation,
+  loadConversationHistory,
+  sendChatMessage,
+  streamChatMessage,
+} from '../services/chat-api';
 import type {
+  AgentProfile,
   Conversation,
   ConversationMessage,
   FailedChatRequest,
@@ -20,8 +27,13 @@ export const useChatStore = defineStore('chat', () => {
   const pendingRequests = ref<Record<string, PendingChatRequest>>({});
   const failedRequests = ref<Record<string, FailedChatRequest>>({});
   const deletingConversationIds = ref<string[]>([]);
+  const syncingConversationIds = ref<string[]>([]);
   const notice = ref<string | undefined>();
-  const selectedProfileId = ref('default');
+  const initialActiveConversation = storedWorkspace.conversations.find(
+    (conversation) => conversation.id === storedWorkspace.activeConversationId,
+  );
+  const selectedProfileId = ref(initialActiveConversation?.profileId ?? 'default');
+  const availableProfileIds = ref<string[]>([]);
 
   const activeConversation = computed(() =>
     conversations.value.find((conversation) => conversation.id === activeConversationId.value),
@@ -72,17 +84,116 @@ export const useChatStore = defineStore('chat', () => {
     persistWorkspace();
   }
 
+  function configureProfiles(
+    profiles: readonly AgentProfile[],
+    defaultProfileId: string | undefined,
+  ): void {
+    if (profiles.length === 0) {
+      return;
+    }
+    availableProfileIds.value = profiles.map((profile) => profile.id);
+    const fallbackProfileId =
+      defaultProfileId !== undefined && availableProfileIds.value.includes(defaultProfileId)
+        ? defaultProfileId
+        : (profiles[0]?.id ?? 'default');
+    const conversation = activeConversation.value;
+    if (conversation === undefined) {
+      selectedProfileId.value = fallbackProfileId;
+      return;
+    }
+    if (availableProfileIds.value.includes(conversation.profileId)) {
+      selectedProfileId.value = conversation.profileId;
+      return;
+    }
+    if (conversation.messages.length === 0) {
+      conversation.profileId = fallbackProfileId;
+      selectedProfileId.value = fallbackProfileId;
+      persistWorkspace();
+      return;
+    }
+    const replacement = createConversation(fallbackProfileId);
+    conversations.value.unshift(replacement);
+    activeConversationId.value = replacement.id;
+    selectedProfileId.value = fallbackProfileId;
+    persistWorkspace();
+    setNotice('原会话使用的 Agent 已不可用，已为你新建默认 Agent 会话。');
+  }
+
   function selectProfile(profileId: string): void {
-    if (!/^[a-zA-Z0-9_-]+$/.test(profileId) || profileId === selectedProfileId.value) {
+    if (
+      !/^[a-zA-Z0-9_-]+$/.test(profileId) ||
+      (availableProfileIds.value.length > 0 && !availableProfileIds.value.includes(profileId))
+    ) {
+      return;
+    }
+    const conversation = activeConversation.value;
+    if (conversation?.profileId === profileId) {
+      selectedProfileId.value = profileId;
       return;
     }
     selectedProfileId.value = profileId;
     // 已有消息的会话必须维持原 Profile；切换时主动开始新会话而不是让用户碰到冲突错误。
-    if (activeConversation.value?.messages.length) {
-      const conversation = createConversation(profileId);
-      conversations.value.unshift(conversation);
-      activeConversationId.value = conversation.id;
+    if (conversation !== undefined && conversation.messages.length === 0) {
+      conversation.profileId = profileId;
       persistWorkspace();
+      return;
+    }
+    const replacement = createConversation(profileId);
+    conversations.value.unshift(replacement);
+    activeConversationId.value = replacement.id;
+    persistWorkspace();
+  }
+
+  function renameConversation(conversationId: string, title: string): boolean {
+    const normalizedTitle = title.trim();
+    const conversation = conversations.value.find((item) => item.id === conversationId);
+    if (conversation === undefined || !normalizedTitle) {
+      return false;
+    }
+    conversation.title = normalizedTitle.slice(0, 64);
+    persistWorkspace();
+    return true;
+  }
+
+  async function syncConversationHistory(conversationId: string): Promise<void> {
+    const conversation = conversations.value.find((item) => item.id === conversationId);
+    if (
+      conversation === undefined ||
+      pendingRequests.value[conversationId] !== undefined ||
+      syncingConversationIds.value.includes(conversationId)
+    ) {
+      return;
+    }
+    syncingConversationIds.value.push(conversationId);
+    try {
+      const history = await loadConversationHistory(conversationId);
+      if (history.length === 0 || pendingRequests.value[conversationId] !== undefined) {
+        return;
+      }
+      const localMessages = [...conversation.messages];
+      conversation.messages.splice(
+        0,
+        conversation.messages.length,
+        ...history.map((message, index) => {
+          const localMessage = localMessages[index];
+          const canReuseLocalMessage =
+            localMessage?.role === message.role && localMessage.content === message.content;
+          return {
+            id: canReuseLocalMessage ? localMessage.id : createIdentifier('message'),
+            role: message.role,
+            content: message.content,
+            requestId:
+              canReuseLocalMessage && message.role === 'user' ? localMessage.requestId : undefined,
+          };
+        }),
+      );
+      persistWorkspace();
+    } catch (error: unknown) {
+      setNotice(errorMessage(error, '无法同步服务端会话历史，已保留本地记录。'));
+    } finally {
+      syncingConversationIds.value = syncingConversationIds.value.filter(
+        (currentId) => currentId !== conversationId,
+      );
     }
   }
 
@@ -114,43 +225,29 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /**
-   * 发送消息的异步函数
-   * @param message - 要发送的消息内容
-   * @returns Promise<void> - 无返回值的Promise
-   */
   async function sendMessage(message: string): Promise<void> {
-    // 获取当前活跃的对话
     const conversation = activeConversation.value;
-    // 去除消息首尾空格后的规范化消息
     const normalizedMessage = message.trim();
-    // 检查对话是否存在、消息是否为空、以及当前对话是否有待处理的请求
     if (
-      conversation === undefined || // 对话不存在
-      !normalizedMessage || // 消息为空
-      pendingRequests.value[conversation.id] !== undefined // 当前对话已有待处理的请求
+      conversation === undefined ||
+      !normalizedMessage ||
+      pendingRequests.value[conversation.id] !== undefined
     ) {
-      return; // 如果任一条件不满足，直接返回
+      return;
     }
 
-    // 创建唯一的请求ID
     const requestId = createIdentifier('request');
-    // 将用户消息添加到对话中
     conversation.messages.push({
-      id: createIdentifier('message'), // 创建消息唯一标识
-      role: 'user', // 消息发送者角色为用户
-      content: normalizedMessage, // 消息内容
-      requestId, // 关联的请求ID
+      id: createIdentifier('message'),
+      role: 'user',
+      content: normalizedMessage,
+      requestId,
     });
-    // 如果是新对话，则根据首条消息创建标题
     if (conversation.title === '新对话') {
       conversation.title = createConversationTitle(normalizedMessage);
     }
-    // 更新对话的最后修改时间
     conversation.updatedAt = new Date().toISOString();
-    // 持久化工作区状态
     persistWorkspace();
-    // 请求助手回复
     await requestAssistantResponse(conversation.id, { requestId, message: normalizedMessage });
   }
 
@@ -170,80 +267,64 @@ export const useChatStore = defineStore('chat', () => {
     notice.value = undefined;
   }
 
-  /**
-   * 请求助手响应的异步函数
-   * @param conversationId 对话ID
-   * @param request 待处理的聊天请求
-   * @returns Promise<void>
-   */
   async function requestAssistantResponse(
-    conversationId: string, // 对话的唯一标识符
-    request: PendingChatRequest, // 待处理的聊天请求对象
+    conversationId: string,
+    request: PendingChatRequest,
   ): Promise<void> {
-    // 函数返回一个空Promise
-    // 将请求添加到待处理请求列表中，并从失败请求列表中移除
     pendingRequests.value[conversationId] = request;
     delete failedRequests.value[conversationId];
+    let assistantMessageId: string | undefined;
     try {
-      // 查找指定ID的对话
       const conversation = conversations.value.find((item) => item.id === conversationId);
       if (conversation === undefined) {
-        return; // 如果对话不存在，直接返回
+        return;
       }
-      // 创建助手消息对象
       const assistantMessage: ConversationMessage = {
-        id: createIdentifier('message'), // 生成消息唯一标识
-        role: 'assistant', // 消息角色为助手
-        content: '', // 初始内容为空
+        id: createIdentifier('message'),
+        role: 'assistant',
+        content: '',
       };
-      // 将助手消息添加到对话消息列表中
+      assistantMessageId = assistantMessage.id;
       conversation.messages.push(assistantMessage);
-      // 流式获取聊天消息
-      await streamChatMessage(
-        {
-          sessionId: conversationId, // 会话ID
-          requestId: request.requestId, // 请求ID
-          message: request.message, // 用户发送的消息
-          profileId: conversation.profileId, // 用户配置ID
-        },
-        // 处理接收到的消息块
-        (chunk) => {
-          // 找到助手消息在列表中的位置
-          const messageIndex = conversation.messages.findIndex(
-            (message) => message.id === assistantMessage.id,
-          );
-          // 如果找到消息，更新其内容
-          if (messageIndex >= 0) {
-            conversation.messages[messageIndex] = {
-              ...assistantMessage,
-              content: (conversation.messages[messageIndex]?.content ?? '') + chunk, // 追加新内容
-            };
-          }
-        },
-      );
-      // 检查助手消息是否有内容
-      if (!conversation.messages.find((message) => message.id === assistantMessage.id)?.content) {
-        throw new Error('模型未返回文本内容'); // 如果没有内容，抛出错误
+      const chatRequest = {
+        sessionId: conversationId,
+        requestId: request.requestId,
+        message: request.message,
+        profileId: conversation.profileId,
+      };
+      const appendChunk = (chunk: string): void => {
+        appendAssistantChunk(conversation, assistantMessage.id, chunk);
+      };
+      try {
+        await streamChatMessage(chatRequest, appendChunk);
+      } catch (error: unknown) {
+        if (!(error instanceof ChatApiError) || error.code !== 'STREAMING_UNAVAILABLE') {
+          throw error;
+        }
+        appendChunk((await sendChatMessage(chatRequest)).content);
       }
-      // 更新对话的最后修改时间
+      if (!conversation.messages.find((message) => message.id === assistantMessage.id)?.content) {
+        throw new Error('模型未返回文本内容');
+      }
       conversation.updatedAt = new Date().toISOString();
-      // 持久化工作区数据
       persistWorkspace();
     } catch (error: unknown) {
-      // 捕获错误
-      // 查找对话
       const conversation = conversations.value.find((item) => item.id === conversationId);
-      // 如果对话的最后一条消息是助手消息，则移除它
-      if (conversation?.messages.at(-1)?.role === 'assistant') {
-        conversation.messages.pop();
+      const assistantMessageIndex = conversation?.messages.findIndex(
+        (message) => message.id === assistantMessageId,
+      );
+      if (
+        conversation !== undefined &&
+        assistantMessageIndex !== undefined &&
+        assistantMessageIndex >= 0
+      ) {
+        conversation.messages.splice(assistantMessageIndex, 1);
       }
-      // 将请求添加到失败请求列表
       failedRequests.value[conversationId] = {
         ...request,
-        description: errorMessage(error, '请求失败，请稍后重试。'), // 获取错误描述
+        description: errorMessage(error, '请求失败，请稍后重试。'),
       };
     } finally {
-      // 无论成功或失败，都从待处理请求列表中移除当前请求
       delete pendingRequests.value[conversationId];
     }
   }
@@ -254,6 +335,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (activeConversationId.value === deletedConversationId) {
       activeConversationId.value = conversations.value[0]?.id;
+      selectedProfileId.value = conversations.value[0]?.profileId ?? selectedProfileId.value;
     }
   }
 
@@ -278,6 +360,7 @@ export const useChatStore = defineStore('chat', () => {
     pendingRequests,
     failedRequests,
     deletingConversationIds,
+    syncingConversationIds,
     notice,
     selectedProfileId,
     activeConversation,
@@ -287,13 +370,34 @@ export const useChatStore = defineStore('chat', () => {
     initialize,
     createNewConversation,
     selectConversation,
+    configureProfiles,
     selectProfile,
+    renameConversation,
+    syncConversationHistory,
     deleteConversation,
     sendMessage,
     retryFailedRequest,
     clearNotice,
   };
 });
+
+function appendAssistantChunk(
+  conversation: Conversation,
+  assistantMessageId: string,
+  chunk: string,
+): void {
+  const messageIndex = conversation.messages.findIndex(
+    (message) => message.id === assistantMessageId,
+  );
+  const currentMessage = conversation.messages[messageIndex];
+  if (messageIndex < 0 || currentMessage === undefined) {
+    return;
+  }
+  conversation.messages[messageIndex] = {
+    ...currentMessage,
+    content: currentMessage.content + chunk,
+  };
+}
 
 function createConversation(profileId: string): Conversation {
   const now = new Date().toISOString();

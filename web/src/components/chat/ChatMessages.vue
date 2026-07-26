@@ -14,6 +14,14 @@ const props = defineProps<{
 const visibleMessages = computed(() =>
   props.messages.filter((message) => message.role === 'user' || message.content),
 );
+const streamingMessageId = computed(() => {
+  if (!props.busy) {
+    return undefined;
+  }
+  const lastMessage = visibleMessages.value.at(-1);
+  return lastMessage?.role === 'assistant' && lastMessage.content ? lastMessage.id : undefined;
+});
+const showTypingIndicator = computed(() => props.busy && streamingMessageId.value === undefined);
 
 const copiedMessageId = ref<string | undefined>();
 let copyResetTimeout: number | undefined;
@@ -47,7 +55,12 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
         <div class="assistant-avatar" aria-hidden="true"><Sparkles /></div>
         <div class="assistant-response">
           <MarkdownContent :content="message.content" />
-          <div class="message-actions">
+          <span
+            v-if="message.id === streamingMessageId"
+            class="stream-cursor"
+            aria-hidden="true"
+          ></span>
+          <div v-else class="message-actions">
             <button
               class="copy-button"
               type="button"
@@ -64,7 +77,7 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
     </article>
 
     <article
-      v-if="busy"
+      v-if="showTypingIndicator"
       class="chat-message assistant-message typing-message"
       aria-label="Stargazer 正在生成回复"
     >
@@ -130,6 +143,16 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
   min-width: 0;
   flex: 1;
   padding-top: 3px;
+}
+
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 15px;
+  margin: 4px 0 0 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: stream-cursor 850ms steps(1) infinite;
 }
 
 .message-actions {
@@ -204,6 +227,18 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
   30% {
     transform: translateY(-3px);
     opacity: 1;
+  }
+}
+
+@keyframes stream-cursor {
+  0%,
+  48% {
+    opacity: 1;
+  }
+
+  49%,
+  100% {
+    opacity: 0;
   }
 }
 
