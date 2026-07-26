@@ -36,6 +36,7 @@ import {
 } from './profiles/index.js';
 import type { AgentProfile } from './profiles/index.js';
 import { OpenAICompatibleChatModel } from './providers/index.js';
+import { loadSkillProfiles } from './skills/index.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3000;
@@ -479,7 +480,7 @@ export async function main(): Promise<number> {
     await mkdir(dirname(databasePath), { recursive: true });
     // 打开 SQLite 对话存储
     const conversationStore = await SqliteConversationStore.open({ databasePath });
-    const profiles = loadAgentProfiles(modelName);
+    const profiles = await loadAgentProfiles(modelName);
     const profileAgent = new ProfileAgent({
       profiles,
       defaultProfileId: profiles[0]!.id,
@@ -556,7 +557,20 @@ function resolveDatabasePath(): string {
  * @param defaultModel 默认使用的模型
  * @returns 返回只读的代理配置文件数组
  */
-function loadAgentProfiles(defaultModel: string): readonly AgentProfile[] {
+async function loadAgentProfiles(defaultModel: string): Promise<readonly AgentProfile[]> {
+  const configuredProfiles = loadConfiguredAgentProfiles(defaultModel);
+  const skillsDirectory = process.env.STARGAZER_SKILLS_DIR?.trim();
+  if (!skillsDirectory) {
+    return configuredProfiles;
+  }
+  const skillProfiles = await loadSkillProfiles({
+    directory: resolve(process.cwd(), skillsDirectory),
+    defaultModel,
+  });
+  return mergeAgentProfiles(configuredProfiles, skillProfiles);
+}
+
+function loadConfiguredAgentProfiles(defaultModel: string): readonly AgentProfile[] {
   // 从环境变量中获取原始配置字符串，并去除首尾空格
   const rawProfiles = process.env.STARGAZER_AGENT_PROFILES?.trim();
   // 如果没有配置，返回默认配置
@@ -585,6 +599,20 @@ function loadAgentProfiles(defaultModel: string): readonly AgentProfile[] {
   }
   // 将每个数组项解析为AgentProfile对象
   return value.map((item) => parseAgentProfile(item));
+}
+
+function mergeAgentProfiles(
+  configuredProfiles: readonly AgentProfile[],
+  skillProfiles: readonly AgentProfile[],
+): readonly AgentProfile[] {
+  const profileIds = new Set(configuredProfiles.map((profile) => profile.id));
+  for (const skillProfile of skillProfiles) {
+    if (profileIds.has(skillProfile.id)) {
+      throw new Error(`Skill ID conflicts with an Agent Profile: ${skillProfile.id}`);
+    }
+    profileIds.add(skillProfile.id);
+  }
+  return [...configuredProfiles, ...skillProfiles];
 }
 
 /**

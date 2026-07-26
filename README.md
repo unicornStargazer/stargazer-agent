@@ -61,6 +61,33 @@ npm run web
 
 Profile 由服务端环境变量 `STARGAZER_AGENT_PROFILES` 管理。未设置时自动使用与既有 `OPENAI_MODEL`、`STARGAZER_SYSTEM_PROMPT` 相同的默认 Profile。工作台切换 Profile 会新建会话；服务端也会把 Profile 标识持久化到 SQLite，拒绝把已有会话改绑到另一个 Profile。
 
+## 业务 Skill
+
+设置 `STARGAZER_SKILLS_DIR` 后，目录的每个一级子目录都可以直接承接为一个业务 Agent。每个子目录中的 `SKILL.md` 会被加载成一个可在工作台选择的 Profile，首次发送消息后会与会话绑定。
+
+```powershell
+$env:STARGAZER_SKILLS_DIR = ".\examples\skills"
+```
+
+```text
+examples/skills/
+└── order-support/
+    └── SKILL.md
+```
+
+```md
+---
+name: Order Support
+model: gpt-4.1-mini
+historyLimit: 16
+---
+
+You are an order support assistant.
+Never invent an order status.
+```
+
+`model` 和 `historyLimit` 是可选字段，前者默认使用 `OPENAI_MODEL`。Skill 文件只接受 `name`、`model` 和 `historyLimit` 三个元数据字段；正文是系统提示。Skill 不会自动获得工具权限，仍需由服务端通过 `ToolRegistry` 显式注册。
+
 构建后运行 Web 服务：
 
 ```powershell
@@ -98,6 +125,7 @@ src/
 ├── chat/          消息、模型与会话存储契约、内存替身、ChatAgent 编排
 ├── memory/        SQLite 会话存储基础设施实现
 ├── providers/     OpenAI 兼容客户端和离线 Fake Model
+├── skills/        SKILL.md 加载与业务 Agent Profile 映射
 ├── tools/         Tool 契约、白名单注册表与受控执行边界
 ├── cli.ts         命令行参数、环境变量和终端交互
 └── web.ts         Web API、静态资源服务与环境配置

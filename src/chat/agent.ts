@@ -61,13 +61,12 @@ export class ChatAgent {
     return assistantMessage;
   }
 
-
-/**
- * 聊天流生成器函数，用于生成聊天内容的异步流
- * @param sessionId 会话ID，用于标识当前对话
- * @param text 用户输入的文本内容
- * @returns 返回一个异步生成器，用于逐步产生聊天响应
- */
+  /**
+   * 聊天流生成器函数，用于生成聊天内容的异步流
+   * @param sessionId 会话ID，用于标识当前对话
+   * @param text 用户输入的文本内容
+   * @returns 返回一个异步生成器，用于逐步产生聊天响应
+   */
   async *chatStream(sessionId: string, text: string): AsyncGenerator<string> {
     // 创建用户消息对象
     const userMessage = createChatMessage('user', text);
@@ -129,43 +128,43 @@ export class ChatAgent {
     return [...systemMessages, ...history, userMessage];
   }
 
-/**
- * 使用工具完成对话的私有异步方法
- * @param messages - 聊天消息的只读数组
- * @param sessionId - 会话ID
- * @returns 返回完成的文本内容
- */
+  /**
+   * 使用工具完成对话的私有异步方法
+   * @param messages - 聊天消息的只读数组
+   * @param sessionId - 会话ID
+   * @returns 返回完成的文本内容
+   */
   private async complete(messages: readonly ChatMessage[], sessionId: string): Promise<string> {
-  // 检查是否有可用工具以及模型是否支持工具完成功能
+    // 检查是否有可用工具以及模型是否支持工具完成功能
     if (this.tools.isEmpty() || this.model.completeWithTools === undefined) {
-    // 如果没有工具或模型不支持工具完成，直接使用模型完成对话
+      // 如果没有工具或模型不支持工具完成，直接使用模型完成对话
       return this.model.complete(messages);
     }
 
-  // 创建请求消息的副本，用于迭代处理
+    // 创建请求消息的副本，用于迭代处理
     const requestMessages = [...messages];
-  // 最大工具调用轮次的循环处理
+    // 最大工具调用轮次的循环处理
     for (let round = 0; round < this.maximumToolRounds; round += 1) {
-    // 使用工具调用模型完成对话
+      // 使用工具调用模型完成对话
       const completion = await this.model.completeWithTools(
         requestMessages,
         this.tools.definitions(),
       );
-    // 如果没有工具调用，直接返回完成的内容
+      // 如果没有工具调用，直接返回完成的内容
       if (completion.toolCalls.length === 0) {
         return completion.content;
       }
-    // 添加工具调用消息到请求消息列表
+      // 添加工具调用消息到请求消息列表
       requestMessages.push(createToolCallMessage(completion.toolCalls));
-    // 执行所有工具调用并处理结果
+      // 执行所有工具调用并处理结果
       for (const toolCall of completion.toolCalls) {
-      // 执行工具调用并传入会话ID
+        // 执行工具调用并传入会话ID
         const result = await this.tools.execute(toolCall.name, toolCall.arguments, { sessionId });
-      // 添加工具执行结果到请求消息列表
+        // 添加工具执行结果到请求消息列表
         requestMessages.push(createToolResultMessage(toolCall.id, toolCall.name, result));
       }
     }
-  // 如果超过最大工具调用轮次，抛出错误
+    // 如果超过最大工具调用轮次，抛出错误
     throw new Error(`Tool call limit (${String(this.maximumToolRounds)}) exceeded.`);
   }
 }
