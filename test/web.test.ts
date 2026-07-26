@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, ChatModel } from '../src/chat/index.js';
-import { ChatAgent, ConversationStoreError } from '../src/chat/index.js';
+import { ChatAgent, ConversationStoreError, InMemoryConversationStore } from '../src/chat/index.js';
+import { ProfileAgent } from '../src/profiles/index.js';
 import { FakeChatModel } from '../src/providers/index.js';
 import { createWebServer } from '../src/web.js';
 
@@ -72,6 +73,36 @@ describe('Web server', () => {
       ],
     });
     expect(model.requests).toHaveLength(1);
+  });
+
+  it('streams complete text and persists it only after the stream finishes', async () => {
+    const store = new InMemoryConversationStore();
+    const profileAgent = new ProfileAgent({
+      profiles: [{ id: 'default', name: '默认助手', model: 'test-model' }],
+      defaultProfileId: 'default',
+      conversationStore: store,
+      createModel: () => new FakeChatModel(['流式回复']),
+    });
+    const server = createWebServer({
+      agent: new ChatAgent({ model: new FakeChatModel([]) }),
+      profileAgent,
+      publicDirectory: resolve(process.cwd(), 'web'),
+    });
+    openServers.push(server);
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const address = server.address() as AddressInfo;
+
+    const response = await fetch(
+      `http://127.0.0.1:${String(address.port)}/api/chat/stream`,
+      createChatRequest('你好', 'request-1'),
+    );
+
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    await expect(response.text()).resolves.toContain('"content":"流式回复"');
+    await expect(store.messages('session-1')).resolves.toEqual([
+      { role: 'user', content: '你好' },
+      { role: 'assistant', content: '流式回复' },
+    ]);
   });
 
   it('rejects invalid input with a stable client error', async () => {

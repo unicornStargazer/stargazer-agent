@@ -6,14 +6,24 @@
  * 本模块处理协议校验、请求协调和错误映射；不保存业务状态，也不直接执行 SQLite 查询。
  */
 
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ChatAgent, ConversationStoreError } from './chat/index.js';
 import type { ChatMessage } from './chat/index.js';
+import { ConversationService } from './application/conversation-service.js';
+import { HttpError, sendError, sendJson, writeSecurityHeaders } from './http/http-error.js';
+import {
+  readJsonBody,
+  requireIdentifier,
+  requireMethod,
+  validateChatRequest,
+} from './http/request-validation.js';
+import type { ChatRequestBody } from './http/request-validation.js';
+import { serveStaticAsset } from './http/static-assets.js';
 import { SqliteConversationStore } from './memory/index.js';
 import {
   ConversationProfileConflictError,
@@ -29,20 +39,7 @@ const DEFAULT_DATABASE_FILE = 'stargazer-agent.sqlite';
 const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_MESSAGE_LENGTH = 16_000;
 const MAX_SESSION_ID_LENGTH = 128;
-const MAX_REQUEST_ID_LENGTH = 128;
 const MAX_COMPLETED_REQUESTS = 500;
-const CONTENT_TYPES: Readonly<Record<string, string>> = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.ico': 'image/x-icon',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.map': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.webp': 'image/webp',
-  '.woff2': 'font/woff2',
-};
 
 type ConversationStorageKind = 'memory' | 'sqlite';
 
@@ -50,6 +47,15 @@ interface WebAgent {
   chat(sessionId: string, text: string): Promise<ChatMessage>;
   history(sessionId: string): Promise<readonly ChatMessage[]>;
   clearHistory(sessionId: string): Promise<void>;
+}
+
+interface CompletedChatRequest {
+  readonly requestMessage: string;
+  readonly responseMessage: ChatMessage;
+}
+interface InFlightChatRequest {
+  readonly requestMessage: string;
+  readonly response: Promise<ChatMessage>;
 }
 
 export interface WebServerOptions {
@@ -60,23 +66,6 @@ export interface WebServerOptions {
   readonly conversationStorage?: ConversationStorageKind | undefined;
 }
 
-interface ChatRequestBody {
-  readonly sessionId: string;
-  readonly requestId: string;
-  readonly message: string;
-  readonly profileId: string | undefined;
-}
-
-interface CompletedChatRequest {
-  readonly requestMessage: string;
-  readonly responseMessage: ChatMessage;
-}
-
-interface InFlightChatRequest {
-  readonly requestMessage: string;
-  readonly response: Promise<ChatMessage>;
-}
-
 interface RequestContext {
   readonly request: IncomingMessage;
   readonly response: ServerResponse;
@@ -85,27 +74,26 @@ interface RequestContext {
   readonly completedRequests: Map<string, CompletedChatRequest>;
   readonly inFlightRequests: Map<string, InFlightChatRequest>;
   readonly sessionQueues: Map<string, Promise<void>>;
+  readonly conversationService: ConversationService;
 }
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'HttpError';
-  }
-}
-
-/** 创建可由测试或上层进程托管的 Web 服务。 */
+/**
+ * 创建一个Web服务器实例
+ * @param options - Web服务器配置选项
+ * @returns 返回一个创建好的服务器实例
+ */
 export function createWebServer(options: WebServerOptions): Server {
+  // 解析公共目录路径，如果未指定则使用当前工作目录下的web/dist目录
   const publicDirectory = resolve(options.publicDirectory ?? resolve(process.cwd(), 'web', 'dist'));
+  // 用于存储已完成的聊天请求
   const completedRequests = new Map<string, CompletedChatRequest>();
   const inFlightRequests = new Map<string, InFlightChatRequest>();
   const sessionQueues = new Map<string, Promise<void>>();
+  const conversationService = new ConversationService(createConversationAgent(options));
 
+  // 创建并返回一个服务器实例，配置请求处理函数
   return createServer((request, response) => {
+    // 使用void操作符忽略Promise的返回值，因为我们不关心处理结果
     void handleRequest({
       request,
       response,
@@ -114,33 +102,62 @@ export function createWebServer(options: WebServerOptions): Server {
       completedRequests,
       inFlightRequests,
       sessionQueues,
+      conversationService,
     });
   });
 }
 
+function createConversationAgent(options: WebServerOptions) {
+  return {
+    chat: (sessionId: string, profileId: string | undefined, message: string) =>
+      options.profileAgent?.chat(sessionId, profileId, message) ?? options.agent.chat(sessionId, message),
+    async *chatStream(sessionId: string, profileId: string | undefined, message: string) {
+      if (options.profileAgent !== undefined) {
+        yield* options.profileAgent.chatStream(sessionId, profileId, message);
+        return;
+      }
+      yield (await options.agent.chat(sessionId, message)).content;
+    },
+    clearHistory: (sessionId: string) => options.agent.clearHistory(sessionId),
+  };
+}
+
+/**
+ * 处理HTTP请求的入口函数
+ * @param context 请求上下文，包含请求和响应对象
+ * @returns Promise<void>
+ */
 async function handleRequest(context: RequestContext): Promise<void> {
-  const { request, response } = context;
+  const { request, response } = context; // 解构请求上下文，获取请求和响应对象
   try {
+    // 创建URL对象，如果请求URL不存在则使用默认值'/'
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+    // 判断请求路径是否以'/api/'开头
     if (requestUrl.pathname.startsWith('/api/')) {
+      // 如果是API请求，则调用API处理函数
       await handleApiRequest(context, requestUrl);
-      return;
+      return; // 处理完成后直接返回
     }
+    // 如果不是API请求，则处理静态资源请求
     await serveStaticAsset(
       response,
-      request.method ?? 'GET',
-      requestUrl.pathname,
-      context.publicDirectory,
+      request.method ?? 'GET', // 如果请求方法不存在，默认使用GET方法
+      requestUrl.pathname, // 请求路径
+      context.publicDirectory, // 公共目录
     );
   } catch (error: unknown) {
+    // 捕获处理过程中可能出现的错误
+    // 如果响应头已经发送，则直接结束响应
     if (response.headersSent) {
       response.end();
       return;
     }
+    // 如果是HTTP错误，则发送对应的错误响应
     if (error instanceof HttpError) {
       sendError(response, error.status, error.code, error.message);
       return;
     }
+    // 如果是会话存储错误，则发送503状态码和相应的错误信息
     if (error instanceof ConversationStoreError) {
       sendError(
         response,
@@ -150,117 +167,218 @@ async function handleRequest(context: RequestContext): Promise<void> {
       );
       return;
     }
+    // 其他未知错误，则发送500状态码和通用错误信息
     sendError(response, 500, 'INTERNAL_ERROR', '服务暂时不可用，请稍后重试。');
   }
 }
 
+/**
+ * 处理API请求的异步函数
+ * @param context 请求上下文对象，包含请求、响应和配置选项
+ * @param requestUrl 请求的URL对象
+ * @returns Promise<void>
+ */
 async function handleApiRequest(context: RequestContext, requestUrl: URL): Promise<void> {
+  // 从上下文中解构出请求、响应和选项
   const { request, response, options } = context;
+  // 处理状态查询接口
   if (requestUrl.pathname === '/api/status') {
-    requireMethod(request, 'GET');
+    requireMethod(request, 'GET'); // 确保请求方法为GET
+    // 发送JSON响应，包含服务状态和配置信息
     sendJson(response, 200, {
       ready: true,
-      model: options.modelName ?? 'OpenAI compatible model',
-      conversationStorage: options.conversationStorage ?? 'memory',
-      defaultProfile: options.profileAgent?.defaultProfile(),
+      model: options.modelName ?? 'OpenAI compatible model', // 默认模型名称
+      conversationStorage: options.conversationStorage ?? 'memory', // 默认对话存储方式
+      defaultProfile: options.profileAgent?.defaultProfile(), // 默认配置文件
     });
     return;
   }
 
+  // 处理配置文件列表接口
   if (requestUrl.pathname === '/api/profiles') {
-    requireMethod(request, 'GET');
+    requireMethod(request, 'GET'); // 确保请求方法为GET
+    // 如果没有配置文件代理，返回空数组
     if (options.profileAgent === undefined) {
       sendJson(response, 200, { profiles: [] });
       return;
     }
+    // 返回配置文件列表
     sendJson(response, 200, { profiles: options.profileAgent.profiles() });
     return;
   }
 
+  // 处理对话历史接口
   if (requestUrl.pathname === '/api/history') {
+    // 获取并验证会话ID
     const sessionId = requireIdentifier(
       requestUrl.searchParams.get('sessionId'),
       'sessionId',
       MAX_SESSION_ID_LENGTH,
     );
+    // GET请求：获取对话历史
     if (request.method === 'GET') {
       sendJson(response, 200, { messages: await options.agent.history(sessionId) });
       return;
     }
+    // DELETE请求：删除对话
     if (request.method === 'DELETE') {
       await deleteConversation(context, sessionId);
       sendJson(response, 200, { deleted: true });
       return;
     }
+    // 不支持的请求方法
     throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该接口不支持当前请求方法。');
   }
 
+  // 处理聊天接口
   if (requestUrl.pathname === '/api/chat') {
-    requireMethod(request, 'POST');
-    const body = validateChatRequest(await readJsonBody(request));
+    requireMethod(request, 'POST'); // 确保请求方法为POST
+    // 验证聊天请求体
+    const body = validateChatRequest(
+      await readJsonBody(request, MAX_REQUEST_BYTES),
+      MAX_MESSAGE_LENGTH,
+      MAX_SESSION_ID_LENGTH,
+    );
+    // 完成聊天请求并发送响应
     const message = await completeChatRequest(context, body);
     sendJson(response, 200, { message });
     return;
   }
 
+  // 处理流式聊天接口
+  if (requestUrl.pathname === '/api/chat/stream') {
+    requireMethod(request, 'POST'); // 确保请求方法为POST
+    // 验证聊天请求体
+    const body = validateChatRequest(
+      await readJsonBody(request, MAX_REQUEST_BYTES),
+      MAX_MESSAGE_LENGTH,
+      MAX_SESSION_ID_LENGTH,
+    );
+    // 检查是否启用流式聊天
+    if (options.profileAgent === undefined) {
+      throw new HttpError(501, 'STREAMING_UNAVAILABLE', '当前服务未启用流式聊天');
+    }
+    // 执行流式聊天响应
+    await streamChatResponse(response, context.conversationService, body);
+    return;
+  }
+
+  // 接口不存在
   throw new HttpError(404, 'NOT_FOUND', '请求的接口不存在。');
 }
 
-async function deleteConversation(context: RequestContext, sessionId: string): Promise<void> {
-  const requestKeyPrefix = `${sessionId}\u0000`;
-  const hasInFlightRequest = [...context.inFlightRequests.keys()].some((requestKey) =>
-    requestKey.startsWith(requestKeyPrefix),
-  );
-  if (hasInFlightRequest) {
-    throw new HttpError(409, 'SESSION_BUSY', '会话正在生成回复，暂时无法删除。');
-  }
-
-  await context.options.agent.clearHistory(sessionId);
-  for (const requestKey of context.completedRequests.keys()) {
-    if (requestKey.startsWith(requestKeyPrefix)) {
-      context.completedRequests.delete(requestKey);
-    }
+/**
+ * 流式处理聊天响应
+ * @param response - 服务器响应对象
+ * @param profileAgent - 个人资料代理对象
+ * @param body - 聊天请求体，包含会话ID、个人资料ID和消息内容
+ * @returns Promise<void>
+ */
+async function streamChatResponse(
+  response: ServerResponse, // 服务器响应对象
+  conversationService: ConversationService,
+  body: ChatRequestBody, // 聊天请求体
+): Promise<void> {
+  writeSecurityHeaders(response); // 写入安全头信息
+  // 设置响应头，禁用缓存，保持连接，使用SSE格式
+  response.writeHead(200, {
+    'Cache-Control': 'no-store', // 不缓存响应
+    Connection: 'keep-alive', // 保持连接
+    'Content-Type': 'text/event-stream; charset=utf-8', // SSE格式，UTF-8编码
+  });
+  try {
+    // 处理聊天流，遍历每个数据块
+    await conversationService.stream(body, (chunk) => {
+      response.write(`event: chunk\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
+    });
+    // 发送完成事件
+    response.end('event: done\ndata: {}\n\n');
+  } catch (error: unknown) {
+    // 捕获错误并映射为可格式化的错误对象
+    const mappedError = mapStreamError(error);
+    // 发送错误事件
+    response.end(`event: error\ndata: ${JSON.stringify(mappedError)}\n\n`);
   }
 }
 
+function mapStreamError(error: unknown): { readonly code: string; readonly message: string } {
+  if (error instanceof UnknownAgentProfileError) {
+    return { code: 'UNKNOWN_PROFILE', message: '请求的 Agent Profile 不存在' };
+  }
+  if (error instanceof ConversationProfileConflictError) {
+    return { code: 'PROFILE_CONFLICT', message: '会话已绑定其他 Agent Profile' };
+  }
+  if (error instanceof ConversationStoreError) {
+    return {
+      code: 'CONVERSATION_STORAGE_UNAVAILABLE',
+      message: '会话存储暂时不可用，请稍后重试。',
+    };
+  }
+  return { code: 'MODEL_UNAVAILABLE', message: '模型暂时不可用，请稍后重试。' };
+}
+
+async function deleteConversation(context: RequestContext, sessionId: string): Promise<void> {
+  await context.conversationService.clear(sessionId);
+}
+
 /**
- * 对同一 requestId 复用进行去重，并将不同 requestId 的同会话请求交给串行队列。
- * 失败请求不会写入已完成缓存，因此调用方可以使用同一 requestId 重试。
+ * 处理聊天请求的完整函数
+ * @param context 请求上下文，包含会话和请求信息
+ * @param body 聊天请求体，包含会话ID、请求ID、消息和配置信息
+ * @returns 返回聊天消息的Promise
  */
 async function completeChatRequest(
   context: RequestContext,
   body: ChatRequestBody,
 ): Promise<ChatMessage> {
-  const requestKey = `${body.sessionId}\u0000${body.requestId}`;
+  // 创建请求键，由会话ID和请求ID组成，使用\u0000作为分隔符
+  try {
+    return await context.conversationService.chat(body);
+  } catch (error) {
+    return mapChatRequestError(error);
+  }
+  /* const requestKey = `${body.sessionId}\u0000${body.requestId}`;
+  // 检查是否已有已完成的请求
   const completedRequest = context.completedRequests.get(requestKey);
   if (completedRequest !== undefined) {
+    // 如果存在已完成请求，验证请求消息是否匹配
     requireMatchingRequestMessage(completedRequest.requestMessage, body.message);
+    // 返回已完成的响应
     return completedRequest.responseMessage;
   }
 
+  // 检查是否已有正在处理的请求
   const existingRequest = context.inFlightRequests.get(requestKey);
   if (existingRequest !== undefined) {
+    // 如果存在正在处理的请求，验证请求消息是否匹配
     requireMatchingRequestMessage(existingRequest.requestMessage, body.message);
+    // 返回正在处理的响应
     return existingRequest.response;
   }
 
+  // 创建新的待处理响应，并加入队列处理
   const pendingResponse = runQueuedChat(
     context,
     body.sessionId,
     body.message,
     body.profileId,
-  ).catch(mapChatRequestError);
+  ).catch(mapChatRequestError); // 捕获并映射错误
+  // 将待处理响应添加到上下文中
   context.inFlightRequests.set(requestKey, {
     requestMessage: body.message,
     response: pendingResponse,
   });
   try {
+    // 等待响应完成
     const message = await pendingResponse;
+    // 记录已完成的请求
     rememberCompletedRequest(context.completedRequests, requestKey, body.message, message);
+    // 返回响应消息
     return message;
   } finally {
+    // 无论成功或失败，都从正在处理的请求中移除
     context.inFlightRequests.delete(requestKey);
-  }
+  } */
 }
 
 function mapChatRequestError(error: unknown): never {
@@ -328,170 +446,14 @@ function rememberCompletedRequest(
   }
 }
 
-async function serveStaticAsset(
-  response: ServerResponse,
-  method: string,
-  pathname: string,
-  publicDirectory: string,
-): Promise<void> {
-  if (method !== 'GET' && method !== 'HEAD') {
-    throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该资源不支持当前请求方法。');
-  }
-  const { filePath, relativePath } = resolveStaticAsset(publicDirectory, pathname);
-
-  let content: Buffer;
-  try {
-    content = await readFile(filePath);
-  } catch (error: unknown) {
-    if (isFileNotFoundError(error)) {
-      throw new HttpError(404, 'NOT_FOUND', '请求的资源不存在。');
-    }
-    throw new HttpError(500, 'ASSET_UNAVAILABLE', '页面资源暂时不可用。');
-  }
-
-  writeSecurityHeaders(response);
-  response.writeHead(200, {
-    'Cache-Control': relativePath.startsWith(`assets${sep}`)
-      ? 'public, max-age=31536000, immutable'
-      : 'no-cache',
-    'Content-Length': content.byteLength,
-    'Content-Type': CONTENT_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
-  });
-  response.end(method === 'HEAD' ? undefined : content);
-}
-
-function resolveStaticAsset(
-  publicDirectory: string,
-  pathname: string,
-): { readonly filePath: string; readonly relativePath: string } {
-  let decodedPath: string;
-  try {
-    decodedPath = decodeURIComponent(pathname);
-  } catch {
-    throw new HttpError(400, 'INVALID_PATH', '资源路径格式不正确。');
-  }
-
-  const requestedPath = decodedPath === '/' ? '/index.html' : decodedPath;
-  const filePath = resolve(publicDirectory, `.${requestedPath}`);
-  const relativePath = relative(publicDirectory, filePath);
-  const outsidePublicDirectory =
-    relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
-  if (outsidePublicDirectory || relativePath.includes('\u0000')) {
-    throw new HttpError(404, 'NOT_FOUND', '请求的资源不存在。');
-  }
-  return { filePath, relativePath };
-}
-
-function isFileNotFoundError(error: unknown): boolean {
-  if (!(error instanceof Error) || !('code' in error)) {
-    return false;
-  }
-  const errorCode = (error as NodeJS.ErrnoException).code;
-  return errorCode === 'ENOENT' || errorCode === 'EISDIR';
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const contentType = request.headers['content-type'] ?? '';
-  const mediaType = contentType.split(';', 1).at(0)?.trim().toLowerCase();
-  if (mediaType !== 'application/json') {
-    throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', '请求必须使用 application/json。');
-  }
-
-  const declaredLength = Number(request.headers['content-length'] ?? 0);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
-    throw new HttpError(413, 'REQUEST_TOO_LARGE', '请求内容过大。');
-  }
-
-  const chunks: Buffer[] = [];
-  let byteLength = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    byteLength += buffer.byteLength;
-    if (byteLength > MAX_REQUEST_BYTES) {
-      throw new HttpError(413, 'REQUEST_TOO_LARGE', '请求内容过大。');
-    }
-    chunks.push(buffer);
-  }
-
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-  } catch {
-    throw new HttpError(400, 'INVALID_JSON', '请求内容不是有效的 JSON。');
-  }
-}
-
-function validateChatRequest(value: unknown): ChatRequestBody {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new HttpError(400, 'INVALID_REQUEST', '请求内容必须是 JSON 对象。');
-  }
-  const body = value as Record<string, unknown>;
-  const sessionId = requireIdentifier(body.sessionId, 'sessionId', MAX_SESSION_ID_LENGTH);
-  const requestId = requireIdentifier(body.requestId, 'requestId', MAX_REQUEST_ID_LENGTH);
-  const message = requireText(body.message, 'message', MAX_MESSAGE_LENGTH);
-  const profileId =
-    body.profileId === undefined
-      ? undefined
-      : requireIdentifier(body.profileId, 'profileId', MAX_SESSION_ID_LENGTH);
-  return { sessionId, requestId, message, profileId };
-}
-
-function requireIdentifier(value: unknown, fieldName: string, maximumLength: number): string {
-  const identifier = requireText(value, fieldName, maximumLength);
-  if (!/^[a-zA-Z0-9_-]+$/.test(identifier)) {
-    throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 格式不正确。`);
-  }
-  return identifier;
-}
-
-function requireText(value: unknown, fieldName: string, maximumLength: number): string {
-  if (typeof value !== 'string') {
-    throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 必须是字符串。`);
-  }
-  const normalizedValue = value.trim();
-  if (!normalizedValue) {
-    throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 不能为空。`);
-  }
-  if (normalizedValue.length > maximumLength) {
-    throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 超出长度限制。`);
-  }
-  return normalizedValue;
-}
-
-function requireMethod(request: IncomingMessage, expectedMethod: string): void {
-  if (request.method !== expectedMethod) {
-    throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该接口不支持当前请求方法。');
-  }
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  const content = Buffer.from(JSON.stringify(body), 'utf8');
-  writeSecurityHeaders(response);
-  response.writeHead(status, {
-    'Cache-Control': 'no-store',
-    'Content-Length': content.byteLength,
-    'Content-Type': 'application/json; charset=utf-8',
-  });
-  response.end(content);
-}
-
-function sendError(response: ServerResponse, status: number, code: string, message: string): void {
-  sendJson(response, status, { error: { code, message } });
-}
-
-function writeSecurityHeaders(response: ServerResponse): void {
-  response.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'",
-  );
-  response.setHeader('Referrer-Policy', 'no-referrer');
-  response.setHeader('X-Content-Type-Options', 'nosniff');
-  response.setHeader('X-Frame-Options', 'DENY');
-}
-
 /**
  * 主函数，启动 Stargazer Web 服务
  * @returns {Promise<number>} 返回状态码，0 表示成功，2 表示失败
  */
+void runQueuedChat;
+void requireMatchingRequestMessage;
+void rememberCompletedRequest;
+
 export async function main(): Promise<number> {
   try {
     // 从环境变量中获取模型名称

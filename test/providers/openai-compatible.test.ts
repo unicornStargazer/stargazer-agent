@@ -56,4 +56,29 @@ describe('OpenAICompatibleChatModel', () => {
       new OpenAICompatibleError('模型服务返回 HTTP 401'),
     );
   });
+
+  it('忽略文本分片后的 usage 统计事件', async () => {
+    const responseBody = [
+      'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n',
+      'data: {"choices":[],"usage":{"total_tokens":12}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const fetchImplementation: typeof fetch = () =>
+      Promise.resolve(
+        new Response(responseBody, {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      );
+    const model = new OpenAICompatibleChatModel(
+      { apiKey: 'test-key', model: 'test-model' },
+      fetchImplementation,
+    );
+
+    const chunks: string[] = [];
+    for await (const chunk of model.stream([createChatMessage('user', '测试')])) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual(['你好']);
+  });
 });

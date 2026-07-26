@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { Check, Copy, Sparkles } from '@lucide/vue';
-import { onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 
 import type { ConversationMessage } from '../../types/chat';
 import MarkdownContent from './MarkdownContent.vue';
 
-defineProps<{
+const props = defineProps<{
   messages: readonly ConversationMessage[];
   busy: boolean;
 }>();
+
+/** 空助手消息是流生成前的内部占位，不应作为独立消息渲染。 */
+const visibleMessages = computed(() =>
+  props.messages.filter((message) => message.role === 'user' || message.content),
+);
 
 const copiedMessageId = ref<string | undefined>();
 let copyResetTimeout: number | undefined;
@@ -32,7 +37,7 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
 <template>
   <div class="message-list" aria-live="polite">
     <article
-      v-for="message in messages"
+      v-for="message in visibleMessages"
       :key="message.id"
       class="chat-message"
       :class="`${message.role}-message`"

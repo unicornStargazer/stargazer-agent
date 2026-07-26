@@ -1,13 +1,13 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { deleteServerConversation, sendChatMessage } from '../services/chat-api';
+import { deleteServerConversation, streamChatMessage } from '../services/chat-api';
 import type { ApiChatMessage } from '../types/chat';
 import { useChatStore } from './chat';
 
 vi.mock('../services/chat-api', () => ({
   deleteServerConversation: vi.fn(),
-  sendChatMessage: vi.fn(),
+  streamChatMessage: vi.fn(),
 }));
 
 describe('chat store', () => {
@@ -22,14 +22,16 @@ describe('chat store', () => {
     const responsePromise = new Promise<ApiChatMessage>((resolve) => {
       resolveResponse = resolve;
     });
-    vi.mocked(sendChatMessage).mockReturnValueOnce(responsePromise);
+    vi.mocked(streamChatMessage).mockImplementationOnce(async (_request, onChunk) => {
+      onChunk((await responsePromise).content);
+    });
     const store = useChatStore();
     store.initialize();
     const originalConversationId = store.activeConversationId;
     expect(originalConversationId).toBeDefined();
 
     const pendingSend = store.sendMessage('第一条消息');
-    await vi.waitFor(() => expect(sendChatMessage).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(streamChatMessage).toHaveBeenCalledOnce());
     store.createNewConversation();
     const newConversationId = store.activeConversationId;
     expect(newConversationId).not.toBe(originalConversationId);
@@ -54,9 +56,9 @@ describe('chat store', () => {
   });
 
   it('retries the same request without duplicating the user message', async () => {
-    vi.mocked(sendChatMessage)
+    vi.mocked(streamChatMessage)
       .mockRejectedValueOnce(new Error('模型暂时不可用'))
-      .mockResolvedValueOnce({ role: 'assistant', content: '重试成功' });
+      .mockImplementationOnce((_request, onChunk) => Promise.resolve(onChunk('重试成功')));
     const store = useChatStore();
     store.initialize();
     const conversationId = store.activeConversationId;
@@ -69,9 +71,9 @@ describe('chat store', () => {
 
     await store.retryFailedRequest();
 
-    expect(sendChatMessage).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(sendChatMessage).mock.calls[1]?.[0]).toEqual(
-      vi.mocked(sendChatMessage).mock.calls[0]?.[0],
+    expect(streamChatMessage).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(streamChatMessage).mock.calls[1]?.[0]).toEqual(
+      vi.mocked(streamChatMessage).mock.calls[0]?.[0],
     );
     expect(
       store.activeConversation?.messages.map(({ role, content }) => ({ role, content })),
@@ -102,7 +104,9 @@ describe('chat store', () => {
   });
 
   it('starts a new conversation when selecting another Profile after a message exists', async () => {
-    vi.mocked(sendChatMessage).mockResolvedValueOnce({ role: 'assistant', content: '回复' });
+    vi.mocked(streamChatMessage).mockImplementationOnce((_request, onChunk) =>
+      Promise.resolve(onChunk('回复')),
+    );
     const store = useChatStore();
     store.initialize();
     const originalConversationId = store.activeConversationId;

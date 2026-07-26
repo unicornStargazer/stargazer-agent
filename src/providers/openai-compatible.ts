@@ -63,30 +63,51 @@ export class OpenAICompatibleChatModel implements ChatModel {
     return extractAssistantText(await parseJsonResponse(response));
   }
 
+  /**
+   * 异步生成器函数，用于流式处理聊天消息并返回响应文本
+   * @param messages - 只读的聊天消息数组，至少需要包含一条消息
+   * @returns AsyncGenerator<string> - 返回一个异步生成器，每次yield一个文本块
+   * @throws 当消息数组为空时抛出错误
+   * @throws 当模型服务返回非200状态码时抛出OpenAICompatibleError
+   */
   async *stream(messages: readonly ChatMessage[]): AsyncGenerator<string> {
+    // 检查消息数组是否为空，为空则抛出错误
     if (messages.length === 0) throw new Error('至少需要一条消息才能调用模型');
+    // 发送请求获取响应，第二个参数true表示启用流式处理
     const response = await this.requestCompletion(messages, true);
+    // 检查响应是否有效，无效则抛出错误
     if (!response.ok || response.body === null)
       throw new OpenAICompatibleError(`模型服务返回 HTTP ${response.status}`);
+    // 获取响应流的读取器和文本解码器
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = ''; // 用于存储不完整的行数据
     try {
+      // 无限循环，直到流结束
       while (true) {
+        // 读取流数据
         const result = await reader.read();
-        if (result.done) break;
+        if (result.done) break; // 如果流结束，退出循环
+        // 解码读取到的数据并追加到缓冲区
         buffer += decoder.decode(result.value, { stream: true });
+        // 按行分割缓冲区内容
         const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() ?? '';
+        buffer = lines.pop() ?? ''; // 保留最后一行（可能不完整）
+        // 处理每一行数据
         for (const line of lines) {
+          // 跳过非数据行
           if (!line.startsWith('data:')) continue;
+          // 提取数据部分并去除前后空格
           const data = line.slice(5).trim();
+          // 遇到结束标记则结束生成器
           if (data === '[DONE]') return;
+          // 处理数据块并yield结果
           const chunk = streamText(data);
           if (chunk) yield chunk;
         }
       }
     } finally {
+      // 确保释放读取器锁
       reader.releaseLock();
     }
   }
@@ -140,11 +161,28 @@ export class OpenAICompatibleChatModel implements ChatModel {
   }
 }
 
+/**
+ * 流式文本处理函数，用于解析和提取流式响应中的文本内容
+ * @param value - JSON格式的字符串，包含流式响应数据
+ * @returns 返回解析后的文本内容，如果解析失败或不符合预期则返回undefined
+ */
 function streamText(value: string): string | undefined {
   try {
+    // 将输入的JSON字符串解析为对象，并确保其符合Record类型
     const body = requireRecord(JSON.parse(value) as unknown);
+    // 确保body.choices存在且为数组，如果不存在则抛出错误
     const choices = requireArray(body.choices, '模型流响应缺少 choices');
-    const delta = requireRecord(requireRecord(choices[0]).delta);
+    // 获取choices数组的第一个元素
+    const firstChoice = choices.at(0);
+    // 部分兼容服务会在结尾追加 usage 统计事件，choices 为空且不表示生成失败。
+    if (firstChoice === undefined) {
+      return undefined;
+    }
+    const choice = requireRecord(firstChoice);
+    if (typeof choice.delta !== 'object' || choice.delta === null || Array.isArray(choice.delta)) {
+      return undefined;
+    }
+    const delta = requireRecord(choice.delta);
     return typeof delta.content === 'string' ? delta.content : undefined;
   } catch (error) {
     if (error instanceof OpenAICompatibleError) throw error;

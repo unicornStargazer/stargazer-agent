@@ -42,6 +42,59 @@ export async function sendChatMessage(request: ChatRequest): Promise<ApiChatMess
   return body.message;
 }
 
+export async function streamChatMessage(
+  request: ChatRequest,
+  onChunk: (content: string) => void,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  } catch {
+    throw new ChatApiError(0, 'NETWORK_ERROR', '无法连接服务，请检查服务状态。');
+  }
+  if (!response.ok || response.body === null) {
+    const body = await parseJson(response);
+    const error = isRecord(body) ? (body as ApiErrorBody).error : undefined;
+    throw new ChatApiError(
+      response.status,
+      typeof error?.code === 'string' ? error.code : 'REQUEST_FAILED',
+      typeof error?.message === 'string' ? error.message : '请求失败',
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) return;
+      buffer += decoder.decode(result.value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+      for (const event of events) {
+        const type = event.match(/^event: (.+)$/m)?.[1];
+        const data = event.match(/^data: (.+)$/m)?.[1];
+        if (!type || !data) continue;
+        const value = JSON.parse(data) as unknown;
+        if (type === 'chunk' && isRecord(value) && typeof value.content === 'string')
+          onChunk(value.content);
+        if (type === 'error' && isRecord(value))
+          throw new ChatApiError(
+            502,
+            typeof value.code === 'string' ? value.code : 'MODEL_UNAVAILABLE',
+            typeof value.message === 'string' ? value.message : '模型暂时不可用',
+          );
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function loadAgentProfiles(): Promise<readonly AgentProfile[]> {
   const body = await requestJson<unknown>('/api/profiles');
   if (!isRecord(body) || !Array.isArray(body.profiles) || !body.profiles.every(isAgentProfile)) {
