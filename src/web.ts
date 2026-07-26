@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * 提供 Chat Agent 的同源 Web 入口。
+ * 提供同源 Web 页面和 HTTP API。
  *
- * 负责静态页面、HTTP 输入校验和错误映射；对话状态仍由 ChatAgent 管理，密钥只从环境变量读取。
+ * 本模块处理协议校验、请求协调和错误映射；不保存业务状态，也不直接执行 SQLite 查询。
  */
 
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ChatAgent, ConversationStoreError } from './chat/index.js';
 import type { ChatMessage } from './chat/index.js';
-import { ChatAgent } from './chat/index.js';
+import { SqliteConversationStore } from './memory/index.js';
 import { OpenAICompatibleChatModel } from './providers/index.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3000;
+const DEFAULT_DATABASE_FILE = 'stargazer-agent.sqlite';
 const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_MESSAGE_LENGTH = 16_000;
 const MAX_SESSION_ID_LENGTH = 128;
 const MAX_REQUEST_ID_LENGTH = 128;
+const MAX_COMPLETED_REQUESTS = 500;
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -35,16 +38,19 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.woff2': 'font/woff2',
 };
 
+type ConversationStorageKind = 'memory' | 'sqlite';
+
 interface WebAgent {
   chat(sessionId: string, text: string): Promise<ChatMessage>;
-  history(sessionId: string): readonly ChatMessage[];
-  clearHistory(sessionId: string): void;
+  history(sessionId: string): Promise<readonly ChatMessage[]>;
+  clearHistory(sessionId: string): Promise<void>;
 }
 
 export interface WebServerOptions {
   readonly agent: WebAgent;
   readonly modelName?: string | undefined;
   readonly publicDirectory?: string | undefined;
+  readonly conversationStorage?: ConversationStorageKind | undefined;
 }
 
 interface ChatRequestBody {
@@ -63,6 +69,16 @@ interface InFlightChatRequest {
   readonly response: Promise<ChatMessage>;
 }
 
+interface RequestContext {
+  readonly request: IncomingMessage;
+  readonly response: ServerResponse;
+  readonly options: WebServerOptions;
+  readonly publicDirectory: string;
+  readonly completedRequests: Map<string, CompletedChatRequest>;
+  readonly inFlightRequests: Map<string, InFlightChatRequest>;
+  readonly sessionQueues: Map<string, Promise<void>>;
+}
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -74,7 +90,7 @@ class HttpError extends Error {
   }
 }
 
-/** 创建可被测试和上层进程托管的 Web 服务。 */
+/** 创建可由测试或上层进程托管的 Web 服务。 */
 export function createWebServer(options: WebServerOptions): Server {
   const publicDirectory = resolve(options.publicDirectory ?? resolve(process.cwd(), 'web', 'dist'));
   const completedRequests = new Map<string, CompletedChatRequest>();
@@ -92,16 +108,6 @@ export function createWebServer(options: WebServerOptions): Server {
       sessionQueues,
     });
   });
-}
-
-interface RequestContext {
-  readonly request: IncomingMessage;
-  readonly response: ServerResponse;
-  readonly options: WebServerOptions;
-  readonly publicDirectory: string;
-  readonly completedRequests: Map<string, CompletedChatRequest>;
-  readonly inFlightRequests: Map<string, InFlightChatRequest>;
-  readonly sessionQueues: Map<string, Promise<void>>;
 }
 
 async function handleRequest(context: RequestContext): Promise<void> {
@@ -127,6 +133,15 @@ async function handleRequest(context: RequestContext): Promise<void> {
       sendError(response, error.status, error.code, error.message);
       return;
     }
+    if (error instanceof ConversationStoreError) {
+      sendError(
+        response,
+        503,
+        'CONVERSATION_STORAGE_UNAVAILABLE',
+        '会话存储暂时不可用，请稍后重试。',
+      );
+      return;
+    }
     sendError(response, 500, 'INTERNAL_ERROR', '服务暂时不可用，请稍后重试。');
   }
 }
@@ -138,7 +153,7 @@ async function handleApiRequest(context: RequestContext, requestUrl: URL): Promi
     sendJson(response, 200, {
       ready: true,
       model: options.modelName ?? 'OpenAI compatible model',
-      conversationStorage: 'memory',
+      conversationStorage: options.conversationStorage ?? 'memory',
     });
     return;
   }
@@ -150,11 +165,11 @@ async function handleApiRequest(context: RequestContext, requestUrl: URL): Promi
       MAX_SESSION_ID_LENGTH,
     );
     if (request.method === 'GET') {
-      sendJson(response, 200, { messages: options.agent.history(sessionId) });
+      sendJson(response, 200, { messages: await options.agent.history(sessionId) });
       return;
     }
     if (request.method === 'DELETE') {
-      deleteConversation(context, sessionId);
+      await deleteConversation(context, sessionId);
       sendJson(response, 200, { deleted: true });
       return;
     }
@@ -172,7 +187,7 @@ async function handleApiRequest(context: RequestContext, requestUrl: URL): Promi
   throw new HttpError(404, 'NOT_FOUND', '请求的接口不存在。');
 }
 
-function deleteConversation(context: RequestContext, sessionId: string): void {
+async function deleteConversation(context: RequestContext, sessionId: string): Promise<void> {
   const requestKeyPrefix = `${sessionId}\u0000`;
   const hasInFlightRequest = [...context.inFlightRequests.keys()].some((requestKey) =>
     requestKey.startsWith(requestKeyPrefix),
@@ -181,7 +196,7 @@ function deleteConversation(context: RequestContext, sessionId: string): void {
     throw new HttpError(409, 'SESSION_BUSY', '会话正在生成回复，暂时无法删除。');
   }
 
-  context.options.agent.clearHistory(sessionId);
+  await context.options.agent.clearHistory(sessionId);
   for (const requestKey of context.completedRequests.keys()) {
     if (requestKey.startsWith(requestKeyPrefix)) {
       context.completedRequests.delete(requestKey);
@@ -190,56 +205,51 @@ function deleteConversation(context: RequestContext, sessionId: string): void {
 }
 
 /**
- * 处理聊天请求的完整函数
- * @param context 请求上下文，包含会话和请求相关信息
- * @param body 聊天请求体，包含会话ID、请求ID和消息内容
- * @returns 返回聊天消息的Promise
+ * 对同一 requestId 复用进行去重，并将不同 requestId 的同会话请求交给串行队列。
+ * 失败请求不会写入已完成缓存，因此调用方可以使用同一 requestId 重试。
  */
 async function completeChatRequest(
-  context: RequestContext,  // 请求上下文对象，包含已完成和进行中的请求信息
-  body: ChatRequestBody,   // 聊天请求体，包含会话ID、请求ID和消息内容
-): Promise<ChatMessage> {   // 返回聊天消息的Promise
-  // 构建请求键，由会话ID和请求ID组成，使用\u0000作为分隔符
+  context: RequestContext,
+  body: ChatRequestBody,
+): Promise<ChatMessage> {
   const requestKey = `${body.sessionId}\u0000${body.requestId}`;
-  // 检查是否已有已完成的请求
   const completedRequest = context.completedRequests.get(requestKey);
   if (completedRequest !== undefined) {
-    // 如果存在已完成请求，验证请求消息是否匹配
     requireMatchingRequestMessage(completedRequest.requestMessage, body.message);
-    // 返回已完成的响应消息
     return completedRequest.responseMessage;
   }
 
-  // 检查是否已有进行中的请求
   const existingRequest = context.inFlightRequests.get(requestKey);
   if (existingRequest !== undefined) {
-    // 如果存在进行中请求，验证请求消息是否匹配
     requireMatchingRequestMessage(existingRequest.requestMessage, body.message);
-    // 返回进行中请求的响应
     return existingRequest.response;
   }
 
-  // 处理队列中的聊天请求，并捕获可能的错误
-  const pendingResponse = runQueuedChat(context, body.sessionId, body.message).catch(() => {
-    // 如果模型不可用，抛出502错误
-    throw new HttpError(502, 'MODEL_UNAVAILABLE', '模型暂时不可用，请稍后重试。');
-  });
-  // 将进行中的请求添加到上下文中
+  const pendingResponse = runQueuedChat(context, body.sessionId, body.message).catch(
+    mapChatRequestError,
+  );
   context.inFlightRequests.set(requestKey, {
     requestMessage: body.message,
     response: pendingResponse,
   });
   try {
-    // 等待获取响应消息
     const message = await pendingResponse;
-    // 记录已完成的请求
     rememberCompletedRequest(context.completedRequests, requestKey, body.message, message);
-    // 返回响应消息
     return message;
   } finally {
-    // 无论成功或失败，都删除进行中的请求记录
     context.inFlightRequests.delete(requestKey);
   }
+}
+
+function mapChatRequestError(error: unknown): never {
+  if (error instanceof ConversationStoreError) {
+    throw new HttpError(
+      503,
+      'CONVERSATION_STORAGE_UNAVAILABLE',
+      '会话存储暂时不可用，请稍后重试。',
+    );
+  }
+  throw new HttpError(502, 'MODEL_UNAVAILABLE', '模型暂时不可用，请稍后重试。');
 }
 
 async function runQueuedChat(
@@ -278,7 +288,7 @@ function rememberCompletedRequest(
   message: ChatMessage,
 ): void {
   completedRequests.set(requestKey, { requestMessage, responseMessage: message });
-  if (completedRequests.size > 500) {
+  if (completedRequests.size > MAX_COMPLETED_REQUESTS) {
     const oldestRequestKey = completedRequests.keys().next().value;
     if (oldestRequestKey !== undefined) {
       completedRequests.delete(oldestRequestKey);
@@ -417,24 +427,14 @@ function requireMethod(request: IncomingMessage, expectedMethod: string): void {
   }
 }
 
-/**
- * 发送JSON响应的函数
- * @param response - ServerResponse对象，用于构建HTTP响应
- * @param status - HTTP状态码
- * @param body - 要发送的响应体数据，可以是任何可序列化的值
- */
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  // 将响应体数据转换为JSON字符串，然后转换为Buffer
   const content = Buffer.from(JSON.stringify(body), 'utf8');
-  // 写入安全相关的HTTP头
   writeSecurityHeaders(response);
-  // 设置响应状态码和头部信息
   response.writeHead(status, {
-    'Cache-Control': 'no-store',           // 禁止缓存响应
-    'Content-Length': content.byteLength,   // 设置响应内容的字节长度
-    'Content-Type': 'application/json; charset=utf-8',  // 指定响应内容类型为JSON，字符集为UTF-8
+    'Cache-Control': 'no-store',
+    'Content-Length': content.byteLength,
+    'Content-Type': 'application/json; charset=utf-8',
   });
-  // 发送响应内容并结束响应
   response.end(content);
 }
 
@@ -452,54 +452,127 @@ function writeSecurityHeaders(response: ServerResponse): void {
   response.setHeader('X-Frame-Options', 'DENY');
 }
 
-/** 从环境变量创建 Agent 并启动 Web 服务。 */
+
+/**
+ * 主函数，启动 Stargazer Web 服务
+ * @returns {Promise<number>} 返回状态码，0 表示成功，2 表示失败
+ */
 export async function main(): Promise<number> {
   try {
+    // 从环境变量中获取模型名称
     const modelName = requireEnvironment('OPENAI_MODEL');
+    // 解析数据库路径
+    const databasePath = resolveDatabasePath();
+    // 递归创建数据库目录（如果不存在）
+    await mkdir(dirname(databasePath), { recursive: true });
+    // 打开 SQLite 对话存储
+    const conversationStore = await SqliteConversationStore.open({ databasePath });
+    // 创建聊天代理，配置模型、对话存储和系统提示
     const agent = new ChatAgent({
       model: new OpenAICompatibleChatModel({
-        apiKey: requireEnvironment('OPENAI_API_KEY'),
-        model: modelName,
-        baseUrl: process.env.OPENAI_BASE_URL,
+        apiKey: requireEnvironment('OPENAI_API_KEY'), // 从环境变量获取 API 密钥
+        model: modelName, // 使用指定的模型
+        baseUrl: process.env.OPENAI_BASE_URL, // 可选的基础 URL
       }),
-      systemPrompt: process.env.STARGAZER_SYSTEM_PROMPT,
+      conversationStore, // 使用 SQLite 存储对话
+      systemPrompt: process.env.STARGAZER_SYSTEM_PROMPT, // 系统提示词
     });
-    const server = createWebServer({ agent, modelName });
+    // 创建 Web 服务器，配置代理、模型名称和存储方式
+    const server = createWebServer({ agent, modelName, conversationStorage: 'sqlite' });
+    // 监听服务器关闭事件，确保正确关闭对话存储
+    server.once('close', () => {
+      void conversationStore.close();
+    });
+    // 获取主机地址，默认为 DEFAULT_HOST
     const host = process.env.HOST?.trim() || DEFAULT_HOST;
+    // 解析端口号
     const port = parsePort(process.env.PORT);
+    // 启动服务器监听指定主机和端口
     await listen(server, port, host);
+    // 输出启动信息到标准输出
     process.stdout.write(`Stargazer Web 已启动: http://${host}:${String(port)}\n`);
-    return 0;
+    return 0; // 成功返回 0
   } catch (error: unknown) {
+    // 输出错误信息到标准错误输出
     process.stderr.write(`错误: ${errorMessage(error)}\n`);
-    return 2;
+    return 2; // 失败返回 2
   }
 }
 
+/**
+ * 解析数据库路径的函数
+ * 根据环境变量配置返回数据库文件的完整路径
+ * 如果没有配置数据库路径，则使用默认路径
+ * @returns 返回数据库文件的完整路径字符串
+ */
+function resolveDatabasePath(): string {
+  // 获取并处理环境变量中配置的数据库路径
+  const configuredDatabasePath = process.env.STARGAZER_DATABASE_PATH?.trim();
+  // 如果配置了数据库路径，则直接返回解析后的绝对路径
+  if (configuredDatabasePath) {
+    return resolve(process.cwd(), configuredDatabasePath);
+  }
+  // 获取并处理环境变量中配置的数据目录
+  const configuredDataDirectory = process.env.STARGAZER_DATA_DIR?.trim();
+  // 根据是否配置了数据目录，决定使用配置的目录还是默认的'data'目录
+  const dataDirectory = configuredDataDirectory
+    ? resolve(process.cwd(), configuredDataDirectory)
+    : resolve(process.cwd(), 'data');
+  // 返回数据目录下的默认数据库文件路径
+  return resolve(dataDirectory, DEFAULT_DATABASE_FILE);
+}
+
+/**
+ * 获取并验证环境变量值
+ * @param name 环境变量名称
+ * @returns 环境变量的值（去除首尾空格）
+ * @throws 当环境变量不存在或为空时抛出错误
+ */
 function requireEnvironment(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} 不能为空`);
+  const value = process.env[name]?.trim(); // 获取环境变量并去除首尾空格
+  if (!value) { // 检查环境变量是否存在或为空
+    throw new Error(`${name} 不能为空`); // 如果为空则抛出错误
   }
-  return value;
+  return value; // 返回环境变量的值
 }
 
+/**
+ * 解析端口号字符串并验证其有效性
+ * @param value - 需要解析的端口号字符串，可能为undefined
+ * @returns 返回解析后的有效端口号，如果输入无效则返回默认端口号
+ * @throws 当端口号不是1到65535之间的整数时抛出错误
+ */
 function parsePort(value: string | undefined): number {
+  // 检查输入值是否为undefined或空字符串，如果是则返回默认端口号
   if (value === undefined || !value.trim()) {
     return DEFAULT_PORT;
   }
+  // 将字符串转换为数字
   const port = Number(value);
+  // 验证端口号是否为整数且在有效范围内(1-65535)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('PORT 必须是 1 到 65535 之间的整数');
   }
+  // 返回验证通过的端口号
   return port;
 }
 
+/**
+ * 监听服务器并返回一个Promise
+ * @param server - Node.js的Server实例
+ * @param port - 服务器监听的端口号
+ * @param host - 服务器监听的主机地址
+ * @returns 返回一个Promise，在服务器成功启动时解析，在发生错误时拒绝
+ */
 function listen(server: Server, port: number, host: string): Promise<void> {
   return new Promise((resolveListen, rejectListen) => {
+    // 设置错误监听器，一旦发生错误则拒绝Promise
     server.once('error', rejectListen);
+    // 启动服务器监听
     server.listen(port, host, () => {
+      // 服务器成功启动后，移除错误监听器
       server.off('error', rejectListen);
+      // 解析Promise，表示服务器已成功启动
       resolveListen();
     });
   });

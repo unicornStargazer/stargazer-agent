@@ -224,3 +224,9 @@ docs/
 # Node.js
 node_modules/
 npm-debug.log*
+
+# Stargazer Agent 本地会话数据库
+/data/
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

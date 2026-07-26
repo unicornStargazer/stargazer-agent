@@ -1,8 +1,8 @@
 # Stargazer Agent
 
-Stargazer Agent 是一个可快速运行的 TypeScript 文本对话 Agent，提供浏览器工作台和 CLI 两种入口。它在当前进程内保存会话历史，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。
+Stargazer Agent 是一个可快速运行的 TypeScript 文本对话 Agent，提供浏览器工作台和 CLI 两种入口。Web 服务使用 SQLite 保存会话历史，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。
 
-当前只实现“连续文本对话”这个核心能力，不包含 Tool、Policy、审批、长期记忆、持久化、流式响应、多 Agent 或复杂运行时。
+当前只实现“连续文本对话”这个核心能力，不包含 Tool、Policy、审批、长期记忆、流式响应、多 Agent 或复杂运行时。
 
 ## 环境
 
@@ -30,6 +30,10 @@ $env:OPENAI_MODEL = "gpt-4.1-mini"
 $env:OPENAI_BASE_URL = "https://api.openai.com/v1"
 # 可选，为所有 Web 会话设置统一系统提示
 $env:STARGAZER_SYSTEM_PROMPT = "回答要简洁"
+# 可选，默认 ./data/stargazer-agent.sqlite
+$env:STARGAZER_DATABASE_PATH = "D:\\agent-data\\stargazer-agent.sqlite"
+# 可选，与 STARGAZER_DATABASE_PATH 二选一，默认 ./data
+$env:STARGAZER_DATA_DIR = "D:\\agent-data"
 ```
 
 ## Web 工作台
@@ -50,7 +54,7 @@ npm run web
 
 该命令先生成 `web/dist`，再启动同源 Web 服务。浏览器访问 `http://127.0.0.1:3000`；可通过 `HOST` 和 `PORT` 环境变量修改监听地址和端口。
 
-页面提供多会话导航、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，模型上下文仍遵循后端约束，仅保存在当前服务进程中；删除会话时会同时清除两侧记录。
+页面提供多会话导航、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，模型上下文由服务端 SQLite 保存；删除会话时会同时清除两侧记录。
 
 构建后运行 Web 服务：
 
@@ -86,7 +90,8 @@ node dist/cli.js chat --message "你好"
 
 ```text
 src/
-├── chat/          消息、模型端口、内存会话与 ChatAgent 编排
+├── chat/          消息、模型与会话存储契约、内存替身、ChatAgent 编排
+├── memory/        SQLite 会话存储基础设施实现
 ├── providers/     OpenAI 兼容客户端和离线 Fake Model
 ├── cli.ts         命令行参数、环境变量和终端交互
 └── web.ts         Web API、静态资源服务与环境配置
@@ -111,17 +116,19 @@ test/
 ```
 
 ```text
-Web/CLI -> ChatAgent -> OpenAICompatibleChatModel -> 模型服务
-                       |
-                       +-> InMemoryConversationStore
+Web -> ChatAgent -> OpenAICompatibleChatModel -> 模型服务
+       |
+       +-> ConversationStore -> SqliteConversationStore
+
+CLI -> ChatAgent -> InMemoryConversationStore
 ```
 
-`chat` 不依赖 HTTP，`providers` 不保存会话，`cli` 不保存密钥。这些边界使后续增加其他模型供应商时不会影响对话核心。
+`chat` 不依赖 HTTP 或数据库，`memory` 只实现会话存储，`providers` 不保存会话，`cli` 不保存密钥。这些边界使后续增加其他模型供应商或存储实现时不会影响对话核心。
 
 ## 已知边界
 
-- 会话历史仅存于当前进程。
+- Web 会话持久化限定为单进程 SQLite，不支持多进程共享写入或用户账号隔离。
 - 只支持非流式纯文本回复。
-- Web API 会串行处理同一会话的请求，但不自动重试或压缩上下文。
+- Web API 会串行处理同一会话的请求，但不自动重试；可在创建 Agent 时设置历史消息窗口。
 
 这些是当前最小可用版本的主动取舍；后续能力应基于真实使用场景逐项加入。

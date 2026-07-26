@@ -58,11 +58,11 @@ function parseCommand(argumentsList: readonly string[]): ParsedCommand {
     throw new Error('未知命令，请使用 chat');
   }
 
-  let message: string | undefined;      // 存储消息内容
-  let sessionId = DEFAULT_SESSION_ID;   // 存储会话ID，默认值为 DEFAULT_SESSION_ID
+  let message: string | undefined; // 存储消息内容
+  let sessionId = DEFAULT_SESSION_ID; // 存储会话ID，默认值为 DEFAULT_SESSION_ID
   let systemPrompt: string | undefined; // 存储系统提示
-  let model: string | undefined;        // 存储模型名称
-  let baseUrl: string | undefined;      // 存储基础URL
+  let model: string | undefined; // 存储模型名称
+  let baseUrl: string | undefined; // 存储基础URL
   // 遍历参数列表，从第二个参数开始（第一个参数是命令本身）
   for (let index = 1; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
@@ -81,19 +81,19 @@ function parseCommand(argumentsList: readonly string[]): ParsedCommand {
     // 根据参数类型进行相应处理
     switch (argument) {
       case '--message':
-        message = optionValue;    // 设置消息内容
+        message = optionValue; // 设置消息内容
         break;
       case '--session-id':
-        sessionId = optionValue;   // 设置会话ID
+        sessionId = optionValue; // 设置会话ID
         break;
       case '--system-prompt':
         systemPrompt = optionValue; // 设置系统提示
         break;
       case '--model':
-        model = optionValue;       // 设置模型名称
+        model = optionValue; // 设置模型名称
         break;
       case '--base-url':
-        baseUrl = optionValue;     // 设置基础URL
+        baseUrl = optionValue; // 设置基础URL
         break;
       default:
         throw new Error(`未知参数: ${argument}`);
@@ -168,15 +168,15 @@ async function runInteractiveChat(agent: ChatAgent, sessionId: string): Promise<
  */
 function usageText(): string {
   return [
-    '用法: stargazer-agent chat [选项]',    // 基本命令格式说明
-    '',                                    // 空行，用于分隔不同部分
-    '选项:',                               // "选项"标题
-    '  --message <text>         发送一条消息后退出',  // 发送消息选项
+    '用法: stargazer-agent chat [选项]', // 基本命令格式说明
+    '', // 空行，用于分隔不同部分
+    '选项:', // "选项"标题
+    '  --message <text>         发送一条消息后退出', // 发送消息选项
     '  --session-id <id>        当前进程内的会话标识', // 会话ID选项
     '  --system-prompt <text>   每轮都会注入的系统提示', // 系统提示选项
-    '  --model <name>           覆盖 OPENAI_MODEL',     // 模型名称选项
-    '  --base-url <url>         覆盖 OPENAI_BASE_URL',  // API基础URL选项
-  ].join('\n');                              // 使用换行符连接数组元素
+    '  --model <name>           覆盖 OPENAI_MODEL', // 模型名称选项
+    '  --base-url <url>         覆盖 OPENAI_BASE_URL', // API基础URL选项
+  ].join('\n'); // 使用换行符连接数组元素
 }
 
 /**

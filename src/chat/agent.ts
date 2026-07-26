@@ -1,75 +1,75 @@
 /**
- * 实现最小文本对话编排。
+ * 编排一次完整的文本对话。
  *
- * 负责组装系统提示、当前进程的会话历史和用户输入，并在模型成功后保存完整轮次；不负责
- * HTTP 协议、工具选择、审批、长期记忆或持久化。仅依赖 chat 域内接口和模型。
+ * ChatAgent 只依赖模型和会话存储契约，不知道 HTTP、SQLite、Tool 或长期记忆的存在。
  */
 
-import { InMemoryConversationStore } from './conversation.js';
+import type { ConversationStore } from './conversation-store.js';
+import { InMemoryConversationStore } from './in-memory-conversation-store.js';
 import { createChatMessage } from './models.js';
 import type { ChatMessage } from './models.js';
 import type { ChatModel } from './port.js';
 
 export interface ChatAgentOptions {
   readonly model: ChatModel;
-  readonly conversationStore?: InMemoryConversationStore | undefined;
+  readonly conversationStore?: ConversationStore | undefined;
   readonly systemPrompt?: string | undefined;
+  /** 限制送入模型的最近历史消息数量；不影响 history() 返回的完整会话。 */
+  readonly historyLimit?: number | undefined;
 }
 
-/**
- * 聊天代理类，用于管理对话流程和维护对话历史
- */
 export class ChatAgent {
-  // 私有属性：聊天模型
   private readonly model: ChatModel;
-  // 私有属性：对话存储，用于保存对话历史
-  private readonly conversationStore: InMemoryConversationStore;
-  // 私有属性：系统提示词，用于设定AI的行为和角色
+  private readonly conversationStore: ConversationStore;
   private readonly systemPrompt: string | undefined;
+  private readonly historyLimit: number | undefined;
 
-  /**
-   * 构造函数，初始化聊天代理
-   * @param options 配置选项，包含模型、对话存储和系统提示
-   */
   constructor(options: ChatAgentOptions) {
     this.model = options.model;
     this.conversationStore = options.conversationStore ?? new InMemoryConversationStore();
     this.systemPrompt = normalizeSystemPrompt(options.systemPrompt);
+    this.historyLimit = normalizeHistoryLimit(options.historyLimit);
   }
 
-  /** 完成一轮对话，并只在模型成功且回复有效后写入用户和助手消息。 */
+
+/**
+ * 聊天方法，处理用户输入并返回助手的回复
+ * @param sessionId 会话ID，用于标识当前对话
+ * @param text 用户输入的文本内容
+ * @returns 返回一个Promise，解析为ChatMessage类型的助手回复消息
+ */
   async chat(sessionId: string, text: string): Promise<ChatMessage> {
+    // 创建用户消息对象
     const userMessage = createChatMessage('user', text);
-    const requestMessages = this.buildRequest(sessionId, userMessage);
+    // 构建请求消息列表，包含对话历史和当前用户消息
+    const requestMessages = await this.buildRequest(sessionId, userMessage);
+    // 调用模型获取回复文本
     const responseText = await this.model.complete(requestMessages);
+    // 创建助手消息对象
     const assistantMessage = createChatMessage('assistant', responseText);
-    this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
+    // 将用户消息和助手消息保存到会话存储中
+    await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
+    // 返回助手消息
     return assistantMessage;
   }
 
-  /** 读取进程内会话中的用户和助手消息，不包含每轮注入的系统提示。 */
-  history(sessionId: string): readonly ChatMessage[] {
+  /** 返回不包含每轮系统提示的完整服务端会话历史。 */
+  async history(sessionId: string): Promise<readonly ChatMessage[]> {
     return this.conversationStore.messages(sessionId);
   }
 
-  /** 清除当前进程内的指定会话历史。 */
-  clearHistory(sessionId: string): void {
-    this.conversationStore.clear(sessionId);
+  /** 删除指定会话；具体存储实现保证删除的持久化语义。 */
+  async clearHistory(sessionId: string): Promise<void> {
+    await this.conversationStore.clear(sessionId);
   }
 
-  /**
-   * 构建聊天请求消息列表
-   * @param sessionId 会话ID，用于标识特定的对话会话
-   * @param userMessage 用户发送的消息对象
-   * @returns 返回一个只读的聊天消息数组，包含系统消息、历史消息和用户消息
-   */
-  private buildRequest(sessionId: string, userMessage: ChatMessage): readonly ChatMessage[] {
-    // 从对话存储中获取指定会话的历史消息
-    const history = this.conversationStore.messages(sessionId);
-    // 如果系统提示存在，则创建系统消息；否则为空数组
+  private async buildRequest(
+    sessionId: string,
+    userMessage: ChatMessage,
+  ): Promise<readonly ChatMessage[]> {
+    const history = await this.conversationStore.messages(sessionId, this.historyLimit);
     const systemMessages =
       this.systemPrompt === undefined ? [] : [createChatMessage('system', this.systemPrompt)];
-    // 将系统消息、历史消息和用户消息合并并返回
     return [...systemMessages, ...history, userMessage];
   }
 }
@@ -86,4 +86,14 @@ function normalizeSystemPrompt(systemPrompt: string | undefined): string | undef
     throw new Error('系统提示不能为空');
   }
   return normalizedSystemPrompt;
+}
+
+function normalizeHistoryLimit(historyLimit: number | undefined): number | undefined {
+  if (historyLimit === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(historyLimit) || historyLimit < 1) {
+    throw new RangeError('历史消息窗口必须是大于零的安全整数');
+  }
+  return historyLimit;
 }

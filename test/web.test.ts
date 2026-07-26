@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, ChatModel } from '../src/chat/index.js';
-import { ChatAgent } from '../src/chat/index.js';
+import { ChatAgent, ConversationStoreError } from '../src/chat/index.js';
 import { FakeChatModel } from '../src/providers/index.js';
 import { createWebServer } from '../src/web.js';
 
@@ -146,8 +146,8 @@ describe('Web server', () => {
 
   it('maps model failures without leaking the internal error', async () => {
     const failingAgent = {
-      history: () => [],
-      clearHistory: () => undefined,
+      history: () => Promise.resolve([]),
+      clearHistory: () => Promise.resolve(),
       chat: () => Promise.reject(new Error('secret upstream response')),
     };
     const origin = await startServer(failingAgent);
@@ -166,6 +166,45 @@ describe('Web server', () => {
     );
   });
 
+  it('reports conversation storage failures without pretending history is empty', async () => {
+    const origin = await startServer({
+      history: () => Promise.resolve([]),
+      clearHistory: () => Promise.resolve(),
+      chat: () => Promise.reject(new ConversationStoreError('database disk I/O error')),
+    });
+
+    const response = await fetch(
+      `${origin}/api/chat`,
+      createChatRequest('需要保存的消息', 'request-1'),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'CONVERSATION_STORAGE_UNAVAILABLE',
+        message: '会话存储暂时不可用，请稍后重试。',
+      },
+    });
+  });
+
+  it('returns a storage error when reading history fails', async () => {
+    const origin = await startServer({
+      history: () => Promise.reject(new ConversationStoreError('database read error')),
+      clearHistory: () => Promise.resolve(),
+      chat: () => Promise.resolve({ role: 'assistant', content: '不应调用' }),
+    });
+
+    const response = await fetch(`${origin}/api/history?sessionId=session-1`);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'CONVERSATION_STORAGE_UNAVAILABLE',
+        message: '会话存储暂时不可用，请稍后重试。',
+      },
+    });
+  });
+
   it('maps a shared in-flight model failure consistently for every caller', async () => {
     const chat = vi.fn(
       () =>
@@ -174,8 +213,8 @@ describe('Web server', () => {
         }),
     );
     const origin = await startServer({
-      history: () => [],
-      clearHistory: () => undefined,
+      history: () => Promise.resolve([]),
+      clearHistory: () => Promise.resolve(),
       chat,
     });
     const request = createChatRequest('并发消息', 'shared-request');
