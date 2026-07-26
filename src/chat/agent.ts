@@ -52,12 +52,17 @@ export class ChatAgent {
     return this.conversationStore.messages(sessionId);
   }
 
-/**
- * 构建聊天请求消息列表
- * @param sessionId 会话ID，用于标识特定的对话会话
- * @param userMessage 用户发送的消息对象
- * @returns 返回一个只读的聊天消息数组，包含系统消息、历史消息和用户消息
- */
+  /** 清除当前进程内的指定会话历史。 */
+  clearHistory(sessionId: string): void {
+    this.conversationStore.clear(sessionId);
+  }
+
+  /**
+   * 构建聊天请求消息列表
+   * @param sessionId 会话ID，用于标识特定的对话会话
+   * @param userMessage 用户发送的消息对象
+   * @returns 返回一个只读的聊天消息数组，包含系统消息、历史消息和用户消息
+   */
   private buildRequest(sessionId: string, userMessage: ChatMessage): readonly ChatMessage[] {
     // 从对话存储中获取指定会话的历史消息
     const history = this.conversationStore.messages(sessionId);

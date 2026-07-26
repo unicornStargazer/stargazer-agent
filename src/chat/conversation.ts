@@ -26,6 +26,11 @@ export class InMemoryConversationStore {
     currentMessages.push(...messages);
     this.messagesBySession.set(normalizedSessionId, currentMessages);
   }
+
+  /** 清除指定会话；未知会话按幂等成功处理。 */
+  clear(sessionId: string): void {
+    this.messagesBySession.delete(normalizeSessionId(sessionId));
+  }
 }
 
 function normalizeSessionId(sessionId: string): string {
