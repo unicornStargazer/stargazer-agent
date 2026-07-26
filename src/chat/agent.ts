@@ -16,11 +16,21 @@ export interface ChatAgentOptions {
   readonly systemPrompt?: string | undefined;
 }
 
+/**
+ * 聊天代理类，用于管理对话流程和维护对话历史
+ */
 export class ChatAgent {
+  // 私有属性：聊天模型
   private readonly model: ChatModel;
+  // 私有属性：对话存储，用于保存对话历史
   private readonly conversationStore: InMemoryConversationStore;
+  // 私有属性：系统提示词，用于设定AI的行为和角色
   private readonly systemPrompt: string | undefined;
 
+  /**
+   * 构造函数，初始化聊天代理
+   * @param options 配置选项，包含模型、对话存储和系统提示
+   */
   constructor(options: ChatAgentOptions) {
     this.model = options.model;
     this.conversationStore = options.conversationStore ?? new InMemoryConversationStore();
@@ -42,10 +52,19 @@ export class ChatAgent {
     return this.conversationStore.messages(sessionId);
   }
 
+/**
+ * 构建聊天请求消息列表
+ * @param sessionId 会话ID，用于标识特定的对话会话
+ * @param userMessage 用户发送的消息对象
+ * @returns 返回一个只读的聊天消息数组，包含系统消息、历史消息和用户消息
+ */
   private buildRequest(sessionId: string, userMessage: ChatMessage): readonly ChatMessage[] {
+    // 从对话存储中获取指定会话的历史消息
     const history = this.conversationStore.messages(sessionId);
+    // 如果系统提示存在，则创建系统消息；否则为空数组
     const systemMessages =
       this.systemPrompt === undefined ? [] : [createChatMessage('system', this.systemPrompt)];
+    // 将系统消息、历史消息和用户消息合并并返回
     return [...systemMessages, ...history, userMessage];
   }
 }

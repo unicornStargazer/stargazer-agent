@@ -42,43 +42,66 @@ export class OpenAICompatibleChatModel implements ChatModel {
     this.fetchImplementation = fetchImplementation;
   }
 
-  /** 提交完整消息序列，并从首个 choice 中读取非空助手文本。 */
+
+/**
+ * 异步完成对话的方法
+ * @param messages - 只读的聊天消息数组，包含对话历史
+ * @returns 返回助手生成的回复文本
+ * @throws 当消息数组为空或模型服务返回错误时抛出异常
+ */
   async complete(messages: readonly ChatMessage[]): Promise<string> {
+  // 检查消息数组是否为空，为空则抛出错误
     if (messages.length === 0) {
       throw new Error('至少需要一条消息才能调用模型');
     }
+  // 发送请求到模型服务并获取响应
     const response = await this.requestCompletion(messages);
+  // 检查响应是否成功，不成功则抛出错误
     if (!response.ok) {
       throw new OpenAICompatibleError(`模型服务返回 HTTP ${response.status}`);
     }
+  // 解析响应并提取助手文本后返回
     return extractAssistantText(await parseJsonResponse(response));
   }
 
+/**
+ * 请求模型完成对话的私有异步方法
+ * @param messages - 聊天消息的只读数组，包含对话历史
+ * @returns 返回一个Promise，解析为Response对象
+ * @throws 当请求超时或连接失败时抛出OpenAICompatibleError
+ */
   private async requestCompletion(messages: readonly ChatMessage[]): Promise<Response> {
+    // 创建一个AbortController实例用于控制请求超时
     const controller = new AbortController();
+    // 设置定时器，在配置的超时时间后中止请求
     const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
     try {
+      // 使用fetchImplementation发送POST请求到模型服务
       return await this.fetchImplementation(completionUrl(this.config.baseUrl), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
+        method: 'POST', // 请求方法为POST
+        headers: { // 设置请求头
+          Authorization: `Bearer ${this.config.apiKey}`, // 认证token
+          'Content-Type': 'application/json', // 内容类型为JSON
         },
+        // 请求体，包含模型名称和消息列表
         body: JSON.stringify({
-          model: this.config.model,
-          messages: messages.map((message) => ({
-            role: message.role,
-            content: message.content,
+          model: this.config.model, // 使用的模型名称
+          messages: messages.map((message) => ({ // 转换消息格式
+            role: message.role, // 消息角色
+            content: message.content, // 消息内容
           })),
         }),
-        signal: controller.signal,
+        signal: controller.signal, // 绑定中止信号
       });
     } catch {
+      // 检查是否是请求被中止（超时）
       if (controller.signal.aborted) {
         throw new OpenAICompatibleError('模型服务请求超时');
       }
+      // 其他连接错误
       throw new OpenAICompatibleError('无法连接模型服务');
     } finally {
+      // 确保清除定时器，防止内存泄漏
       clearTimeout(timeoutId);
     }
   }
