@@ -5,7 +5,14 @@
  * 流式响应或工具调用。允许依赖 Node.js 原生 fetch 和 chat 消息类型。
  */
 
-import type { ChatMessage, ChatModel, ToolCall, ToolCallingCompletion } from '../chat/index.js';
+import type {
+  ChatMessage,
+  ChatModel,
+  ModelStreamEvent,
+  ModelTokenUsage,
+  ToolCall,
+  ToolCallingCompletion,
+} from '../chat/index.js';
 import type { ToolDefinition } from '../tools/index.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -16,6 +23,7 @@ export interface OpenAICompatibleConfig {
   readonly model: string;
   readonly baseUrl?: string | undefined;
   readonly timeoutMs?: number | undefined;
+  readonly includeStreamUsage?: boolean | undefined;
 }
 
 export type FetchImplementation = typeof fetch;
@@ -25,6 +33,7 @@ interface ValidatedConfig {
   readonly model: string;
   readonly baseUrl: string;
   readonly timeoutMs: number;
+  readonly includeStreamUsage: boolean;
 }
 
 export class OpenAICompatibleError extends Error {
@@ -85,7 +94,7 @@ export class OpenAICompatibleChatModel implements ChatModel {
    * @throws 当消息数组为空时抛出错误
    * @throws 当模型服务返回非200状态码时抛出OpenAICompatibleError
    */
-  async *stream(messages: readonly ChatMessage[]): AsyncGenerator<string> {
+  async *stream(messages: readonly ChatMessage[]): AsyncGenerator<ModelStreamEvent> {
     // 检查消息数组是否为空，为空则抛出错误
     if (messages.length === 0) throw new Error('至少需要一条消息才能调用模型');
     // 发送请求获取响应，第二个参数true表示启用流式处理
@@ -117,8 +126,9 @@ export class OpenAICompatibleChatModel implements ChatModel {
           // 遇到结束标记则结束生成器
           if (data === '[DONE]') return;
           // 处理数据块并yield结果
-          const chunk = streamText(data);
-          if (chunk) yield chunk;
+          for (const event of streamEvents(data)) {
+            yield event;
+          }
         }
       }
     } finally {
@@ -155,7 +165,14 @@ export class OpenAICompatibleChatModel implements ChatModel {
         body: JSON.stringify({
           model: this.config.model, // 使用的模型名称
           messages: messages.map(toProviderMessage),
-          ...(stream ? { stream: true } : {}),
+          ...(stream
+            ? {
+                stream: true,
+                ...(this.config.includeStreamUsage
+                  ? { stream_options: { include_usage: true } }
+                  : {}),
+              }
+            : {}),
           ...(tools.length > 0 ? { tools: tools.map(toProviderTool) } : {}),
         }),
         signal: controller.signal, // 绑定中止信号
@@ -179,28 +196,71 @@ export class OpenAICompatibleChatModel implements ChatModel {
  * @param value - JSON格式的字符串，包含流式响应数据
  * @returns 返回解析后的文本内容，如果解析失败或不符合预期则返回undefined
  */
-function streamText(value: string): string | undefined {
+function streamEvents(value: string): readonly ModelStreamEvent[] {
   try {
     // 将输入的JSON字符串解析为对象，并确保其符合Record类型
     const body = requireRecord(JSON.parse(value) as unknown);
     // 确保body.choices存在且为数组，如果不存在则抛出错误
     const choices = requireArray(body.choices, '模型流响应缺少 choices');
+    const events: ModelStreamEvent[] = [];
+    const usage = extractUsage(body.usage);
+    if (usage !== undefined) {
+      events.push({ type: 'usage', usage });
+    }
     // 获取choices数组的第一个元素
     const firstChoice = choices.at(0);
     // 部分兼容服务会在结尾追加 usage 统计事件，choices 为空且不表示生成失败。
     if (firstChoice === undefined) {
-      return undefined;
+      return events;
     }
     const choice = requireRecord(firstChoice);
     if (typeof choice.delta !== 'object' || choice.delta === null || Array.isArray(choice.delta)) {
-      return undefined;
+      return events;
     }
     const delta = requireRecord(choice.delta);
-    return typeof delta.content === 'string' ? delta.content : undefined;
+    const reasoning = extractReasoning(delta);
+    if (reasoning !== undefined) {
+      events.push({ type: 'reasoning', content: reasoning });
+    }
+    if (typeof delta.content === 'string' && delta.content) {
+      events.push({ type: 'content', content: delta.content });
+    }
+    return events;
   } catch (error) {
     if (error instanceof OpenAICompatibleError) throw error;
     throw new OpenAICompatibleError('模型流响应不是有效 JSON');
   }
+}
+
+function extractReasoning(delta: Record<string, unknown>): string | undefined {
+  const reasoning = delta.reasoning_content ?? delta.reasoning;
+  return typeof reasoning === 'string' && reasoning ? reasoning : undefined;
+}
+
+function extractUsage(value: unknown): ModelTokenUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const completionDetails = isRecord(value.completion_tokens_details)
+    ? value.completion_tokens_details
+    : undefined;
+  const usage = {
+    inputTokens: nonNegativeInteger(value.prompt_tokens),
+    outputTokens: nonNegativeInteger(value.completion_tokens),
+    reasoningTokens: completionDetails
+      ? nonNegativeInteger(completionDetails.reasoning_tokens)
+      : undefined,
+    totalTokens: nonNegativeInteger(value.total_tokens),
+  };
+  return Object.values(usage).some((tokenCount) => tokenCount !== undefined) ? usage : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function toProviderMessage(message: ChatMessage): Record<string, unknown> {
@@ -275,7 +335,16 @@ function validateConfig(config: OpenAICompatibleConfig): ValidatedConfig {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('请求超时必须大于 0');
   }
-  return { apiKey, model, baseUrl, timeoutMs };
+  if (typeof config.includeStreamUsage !== 'boolean' && config.includeStreamUsage !== undefined) {
+    throw new TypeError('includeStreamUsage 必须是布尔值');
+  }
+  return {
+    apiKey,
+    model,
+    baseUrl,
+    timeoutMs,
+    includeStreamUsage: config.includeStreamUsage ?? true,
+  };
 }
 
 function normalizeRequiredText(value: unknown, errorMessage: string): string {

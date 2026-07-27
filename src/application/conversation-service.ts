@@ -3,7 +3,7 @@
  * HTTP 层只负责把请求转换为命令，并不持有会话状态。
  */
 
-import type { ChatMessage } from '../chat/index.js';
+import type { ChatMessage, ModelStreamEvent } from '../chat/index.js';
 
 export interface ConversationCommand {
   readonly sessionId: string;
@@ -18,7 +18,7 @@ export interface ConversationAgent {
     sessionId: string,
     profileId: string | undefined,
     message: string,
-  ): AsyncIterable<string>;
+  ): AsyncIterable<ModelStreamEvent>;
   clearHistory(sessionId: string): Promise<void>;
 }
 
@@ -78,7 +78,10 @@ export class ConversationService {
    * @param onChunk 处理每个数据块的回调函数
    * @returns Promise<void>
    */
-  async stream(command: ConversationCommand, onChunk: (chunk: string) => void): Promise<void> {
+  async stream(
+    command: ConversationCommand,
+    onEvent: (event: ModelStreamEvent) => void,
+  ): Promise<void> {
     // 生成请求的唯一标识
     const requestKey = this.requestKey(command);
     // 检查是否已有已完成的请求
@@ -87,7 +90,7 @@ export class ConversationService {
       // 确保消息内容一致，防止请求冲突
       this.requireSameMessage(completed.message, command.message);
       // 直接返回已完成的响应内容
-      onChunk(completed.response.content);
+      onEvent({ type: 'content', content: completed.response.content });
       return;
     }
     // 检查是否有正在处理的请求
@@ -96,20 +99,22 @@ export class ConversationService {
       // 确保消息内容一致，防止请求冲突
       this.requireSameMessage(inFlight.message, command.message);
       // 返回正在处理的请求的响应内容
-      onChunk((await inFlight.response).content);
+      onEvent({ type: 'content', content: (await inFlight.response).content });
       return;
     }
     // 创建新的请求响应
     const response = this.runQueued(command.sessionId, async () => {
       let content = '';
       // 流式获取AI助手的响应
-      for await (const chunk of this.agent.chatStream(
+      for await (const event of this.agent.chatStream(
         command.sessionId,
         command.profileId,
         command.message,
       )) {
-        content += chunk;
-        onChunk(chunk);
+        if (event.type === 'content') {
+          content += event.content;
+        }
+        onEvent(event);
       }
       return { role: 'assistant' as const, content };
     });

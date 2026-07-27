@@ -8,7 +8,7 @@ import type { ConversationStore } from './conversation-store.js';
 import { InMemoryConversationStore } from './in-memory-conversation-store.js';
 import { createChatMessage, createToolCallMessage, createToolResultMessage } from './models.js';
 import type { ChatMessage } from './models.js';
-import type { ChatModel } from './port.js';
+import type { ChatModel, ModelStreamEvent } from './port.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
 
 const DEFAULT_MAXIMUM_TOOL_ROUNDS = 4;
@@ -67,7 +67,7 @@ export class ChatAgent {
    * @param text 用户输入的文本内容
    * @returns 返回一个异步生成器，用于逐步产生聊天响应
    */
-  async *chatStream(sessionId: string, text: string): AsyncGenerator<string> {
+  async *chatStream(sessionId: string, text: string): AsyncGenerator<ModelStreamEvent> {
     // 创建用户消息对象
     const userMessage = createChatMessage('user', text);
     // 构建请求消息列表，包含会话历史和当前用户消息
@@ -81,7 +81,7 @@ export class ChatAgent {
       // 将用户和助手消息添加到会话存储中
       await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
       // 返回完整响应
-      yield response;
+      yield { type: 'content', content: response };
       return;
     }
     // 如果模型不支持流式响应
@@ -89,18 +89,16 @@ export class ChatAgent {
       // 获取聊天响应
       const response = await this.chat(sessionId, text);
       // 返回响应内容
-      yield response.content;
+      yield { type: 'content', content: response.content };
       return;
     }
     let content = ''; // 用于累积流式响应的内容
     // 遍历流式响应的每个数据块
-    for await (const chunk of this.model.stream(requestMessages)) {
-      // 如果数据块为空则跳过
-      if (!chunk) continue;
-      // 累积内容
-      content += chunk;
-      // 产出当前数据块
-      yield chunk;
+    for await (const event of this.model.stream(requestMessages)) {
+      if (event.type === 'content') {
+        content += event.content;
+      }
+      yield event;
     }
     // 创建助手消息对象
     const assistantMessage = createChatMessage('assistant', content);

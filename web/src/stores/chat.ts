@@ -14,6 +14,7 @@ import type {
   ConversationMessage,
   FailedChatRequest,
   PendingChatRequest,
+  TokenUsage,
 } from '../types/chat';
 import { loadWorkspace, saveWorkspace } from '../utils/conversation-storage';
 import { createIdentifier } from '../utils/identifiers';
@@ -295,8 +296,17 @@ export const useChatStore = defineStore('chat', () => {
       const appendChunk = (chunk: string): void => {
         appendAssistantChunk(conversation, assistantMessage.id, chunk);
       };
+      const appendReasoning = (chunk: string): void => {
+        appendAssistantReasoning(conversation, assistantMessage.id, chunk);
+      };
+      const applyUsage = (usage: TokenUsage): void => {
+        setAssistantUsage(conversation, assistantMessage.id, usage);
+      };
       try {
-        await streamChatMessage(chatRequest, appendChunk);
+        await streamChatMessage(chatRequest, appendChunk, {
+          onReasoning: appendReasoning,
+          onUsage: applyUsage,
+        });
       } catch (error: unknown) {
         if (!(error instanceof ChatApiError) || error.code !== 'STREAMING_UNAVAILABLE') {
           throw error;
@@ -397,6 +407,40 @@ function appendAssistantChunk(
     ...currentMessage,
     content: currentMessage.content + chunk,
   };
+}
+
+function appendAssistantReasoning(
+  conversation: Conversation,
+  assistantMessageId: string,
+  chunk: string,
+): void {
+  updateAssistantMessage(conversation, assistantMessageId, (message) => ({
+    ...message,
+    reasoning: (message.reasoning ?? '') + chunk,
+  }));
+}
+
+function setAssistantUsage(
+  conversation: Conversation,
+  assistantMessageId: string,
+  usage: TokenUsage,
+): void {
+  updateAssistantMessage(conversation, assistantMessageId, (message) => ({ ...message, usage }));
+}
+
+function updateAssistantMessage(
+  conversation: Conversation,
+  assistantMessageId: string,
+  update: (message: ConversationMessage) => ConversationMessage,
+): void {
+  const messageIndex = conversation.messages.findIndex(
+    (message) => message.id === assistantMessageId,
+  );
+  const currentMessage = conversation.messages[messageIndex];
+  if (messageIndex < 0 || currentMessage === undefined) {
+    return;
+  }
+  conversation.messages[messageIndex] = update(currentMessage);
 }
 
 function createConversation(profileId: string): Conversation {

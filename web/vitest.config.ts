@@ -1,5 +1,6 @@
 import { fileURLToPath, URL } from 'node:url';
 
+import './node21-crypto-compat.js';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
 

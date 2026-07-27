@@ -23,16 +23,23 @@ describe('chat API service', () => {
         .mockResolvedValue(
           createStreamResponse([
             'event: chunk\ndata: {"cont',
-            'ent":"第一段"}\n\nevent: chunk\ndata: {"content":"第二段"}\n\n',
+            'ent":"第一段"}\n\nevent: reasoning\ndata: {"content":"先分析"}\n\nevent: usage\ndata: {"usage":{"inputTokens":5}}\n\nevent: chunk\ndata: {"content":"第二段"}\n\n',
             'event: done\ndata: {}\n\n',
           ]),
         ),
     );
     const chunks: string[] = [];
+    const reasoning: string[] = [];
+    const usages: unknown[] = [];
 
-    await streamChatMessage(chatRequest, (content) => chunks.push(content));
+    await streamChatMessage(chatRequest, (content) => chunks.push(content), {
+      onReasoning: (content) => reasoning.push(content),
+      onUsage: (usage) => usages.push(usage),
+    });
 
     expect(chunks).toEqual(['第一段', '第二段']);
+    expect(reasoning).toEqual(['先分析']);
+    expect(usages).toEqual([{ inputTokens: 5 }]);
   });
 
   it('rejects malformed SSE data with a stable response error', async () => {

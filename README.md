@@ -28,6 +28,8 @@ $env:OPENAI_API_KEY = "你的密钥"
 $env:OPENAI_MODEL = "gpt-4.1-mini"
 # 可选，默认 https://api.openai.com/v1
 $env:OPENAI_BASE_URL = "https://api.openai.com/v1"
+# 可选，默认 true；上游不支持 stream_options 时设为 false
+$env:OPENAI_STREAM_INCLUDE_USAGE = "true"
 # 可选，为所有 Web 会话设置统一系统提示
 $env:STARGAZER_SYSTEM_PROMPT = "回答要简洁"
 # 可选，默认 ./data/stargazer-agent.sqlite
@@ -128,7 +130,8 @@ src/
 ├── skills/        SKILL.md 加载与业务 Agent Profile 映射
 ├── tools/         Tool 契约、白名单注册表与受控执行边界
 ├── cli.ts         命令行参数、环境变量和终端交互
-└── web.ts         Web API、静态资源服务与环境配置
+├── http/          Fastify 路由、SSE、静态资源和请求校验适配
+└── server.ts      后端启动入口与运行时依赖装配
 web/
 ├── index.html         Vite 页面入口
 ├── vite.config.ts     Vue 构建、开发服务器和 API 代理

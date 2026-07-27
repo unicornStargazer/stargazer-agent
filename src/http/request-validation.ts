@@ -1,7 +1,5 @@
 /** HTTP 请求体和路径参数校验，集中维护外部输入边界。 */
 
-import type { IncomingMessage } from 'node:http';
-
 import { HttpError } from './http-error.js';
 
 export interface ChatRequestBody {
@@ -11,49 +9,29 @@ export interface ChatRequestBody {
   readonly profileId: string | undefined;
 }
 
-export async function readJsonBody(
-  request: IncomingMessage,
-  maximumBytes: number,
-): Promise<unknown> {
-  const contentType = request.headers['content-type'] ?? '';
-  if (contentType.split(';', 1).at(0)?.trim().toLowerCase() !== 'application/json') {
-    throw new HttpError(415, 'UNSUPPORTED_MEDIA_TYPE', '请求必须使用 application/json。');
-  }
-  const declaredLength = Number(request.headers['content-length'] ?? 0);
-  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-    throw new HttpError(413, 'REQUEST_TOO_LARGE', '请求内容过大。');
-  }
-  const chunks: Buffer[] = [];
-  let byteLength = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    byteLength += buffer.byteLength;
-    if (byteLength > maximumBytes) {
-      throw new HttpError(413, 'REQUEST_TOO_LARGE', '请求内容过大。');
-    }
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-  } catch {
-    throw new HttpError(400, 'INVALID_JSON', '请求内容不是有效的 JSON。');
-  }
-}
-
+/**
+ * 验证聊天请求的数据格式和内容
+ * @param value - 未知类型的输入值，将被验证为聊天请求体
+ * @param maximumMessageLength - 消息的最大允许长度
+ * @param maximumIdentifierLength - 标识符的最大允许长度
+ * @returns 返回经过验证和格式化的 ChatRequestBody 对象
+ * @throws 当请求不符合要求时抛出 HttpError
+ */
 export function validateChatRequest(
-  value: unknown,
-  maximumMessageLength: number,
-  maximumIdentifierLength: number,
-): ChatRequestBody {
+  value: unknown, // 输入的未知类型值，需要进行验证
+  maximumMessageLength: number, // 消息的最大长度限制
+  maximumIdentifierLength: number, // 标识符的最大长度限制
+): ChatRequestBody { // 函数返回类型为 ChatRequestBody
+  // 检查输入值是否为非空对象且不是数组
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new HttpError(400, 'INVALID_REQUEST', '请求内容必须是 JSON 对象。');
   }
-  const body = value as Record<string, unknown>;
+  const body = value as Record<string, unknown>; // 将输入值断言为记录对象
   return {
-    sessionId: requireIdentifier(body.sessionId, 'sessionId', maximumIdentifierLength),
-    requestId: requireIdentifier(body.requestId, 'requestId', maximumIdentifierLength),
-    message: requireText(body.message, 'message', maximumMessageLength),
-    profileId:
+    sessionId: requireIdentifier(body.sessionId, 'sessionId', maximumIdentifierLength), // 验证并获取会话ID
+    requestId: requireIdentifier(body.requestId, 'requestId', maximumIdentifierLength), // 验证并获取请求ID
+    message: requireText(body.message, 'message', maximumMessageLength), // 验证并获取消息内容
+    profileId: // 处理可选的配置文件ID
       body.profileId === undefined
         ? undefined
         : requireIdentifier(body.profileId, 'profileId', maximumIdentifierLength),
@@ -70,12 +48,6 @@ export function requireIdentifier(
     throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 格式不正确。`);
   }
   return identifier;
-}
-
-export function requireMethod(request: IncomingMessage, expectedMethod: string): void {
-  if (request.method !== expectedMethod) {
-    throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该接口不支持当前请求方法。');
-  }
 }
 
 function requireText(value: unknown, fieldName: string, maximumLength: number): string {

@@ -2,24 +2,18 @@ import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
 
 import type { ChatMessage, ChatModel } from '../src/chat/index.js';
 import { ChatAgent, ConversationStoreError, InMemoryConversationStore } from '../src/chat/index.js';
 import { ProfileAgent } from '../src/profiles/index.js';
 import { FakeChatModel } from '../src/providers/index.js';
-import { createWebServer } from '../src/web.js';
+import { createHttpApp } from '../src/http/app.js';
 
-const openServers: ReturnType<typeof createWebServer>[] = [];
+const openServers: FastifyInstance[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    openServers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolveClose, rejectClose) => {
-          server.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
-        }),
-    ),
-  );
+  await Promise.all(openServers.splice(0).map((server) => server.close()));
 });
 
 describe('Web server', () => {
@@ -83,14 +77,14 @@ describe('Web server', () => {
       conversationStore: store,
       createModel: () => new FakeChatModel(['流式回复']),
     });
-    const server = createWebServer({
+    const server = createHttpApp({
       agent: new ChatAgent({ model: new FakeChatModel([]) }),
       profileAgent,
       publicDirectory: resolve(process.cwd(), 'web'),
     });
     openServers.push(server);
-    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
-    const address = server.address() as AddressInfo;
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    const address = server.server.address() as AddressInfo;
 
     const response = await fetch(
       `http://127.0.0.1:${String(address.port)}/api/chat/stream`,
@@ -284,15 +278,15 @@ describe('Web server', () => {
   });
 });
 
-async function startServer(agent: Parameters<typeof createWebServer>[0]['agent']): Promise<string> {
-  const server = createWebServer({
+async function startServer(agent: Parameters<typeof createHttpApp>[0]['agent']): Promise<string> {
+  const server = createHttpApp({
     agent,
     modelName: 'test-model',
     publicDirectory: resolve(process.cwd(), 'web'),
   });
   openServers.push(server);
-  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
-  const address = server.address() as AddressInfo;
+  await server.listen({ port: 0, host: '127.0.0.1' });
+  const address = server.server.address() as AddressInfo;
   return `http://127.0.0.1:${String(address.port)}`;
 }
 

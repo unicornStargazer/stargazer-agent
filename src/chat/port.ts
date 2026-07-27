@@ -12,6 +12,18 @@ export interface ToolCallingCompletion {
   readonly toolCalls: readonly ToolCall[];
 }
 
+export interface ModelTokenUsage {
+  readonly inputTokens?: number | undefined;
+  readonly outputTokens?: number | undefined;
+  readonly reasoningTokens?: number | undefined;
+  readonly totalTokens?: number | undefined;
+}
+
+export type ModelStreamEvent =
+  | { readonly type: 'content'; readonly content: string }
+  | { readonly type: 'reasoning'; readonly content: string }
+  | { readonly type: 'usage'; readonly usage: ModelTokenUsage };
+
 export interface ChatModel {
   /**
    * 根据已组装的有序消息返回一段完整助手文本。
@@ -25,5 +37,5 @@ export interface ChatModel {
     tools: readonly ToolDefinition[],
   ): Promise<ToolCallingCompletion>;
   /** 可选的增量文本输出；不支持时调用方可退回 complete。 */
-  stream?(messages: readonly ChatMessage[]): AsyncIterable<string>;
+  stream?(messages: readonly ChatMessage[]): AsyncIterable<ModelStreamEvent>;
 }

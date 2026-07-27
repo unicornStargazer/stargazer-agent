@@ -1,10 +1,19 @@
 export type ConversationRole = 'user' | 'assistant';
 
+export interface TokenUsage {
+  readonly inputTokens?: number | undefined;
+  readonly outputTokens?: number | undefined;
+  readonly reasoningTokens?: number | undefined;
+  readonly totalTokens?: number | undefined;
+}
+
 export interface ConversationMessage {
   readonly id: string;
   readonly role: ConversationRole;
   readonly content: string;
   readonly requestId?: string | undefined;
+  readonly reasoning?: string | undefined;
+  readonly usage?: TokenUsage | undefined;
 }
 
 export interface Conversation {

@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createChatMessage } from '../../src/chat/models.js';
+import type { ModelStreamEvent } from '../../src/chat/port.js';
 import {
   OpenAICompatibleChatModel,
   OpenAICompatibleError,
@@ -57,29 +58,43 @@ describe('OpenAICompatibleChatModel', () => {
     );
   });
 
-  it('忽略文本分片后的 usage 统计事件', async () => {
+  it('解析公开推理和 usage 统计事件', async () => {
     const responseBody = [
+      'data: {"choices":[{"delta":{"reasoning_content":"先分析"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n',
-      'data: {"choices":[],"usage":{"total_tokens":12}}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}\n\n',
       'data: [DONE]\n\n',
     ].join('');
-    const fetchImplementation: typeof fetch = () =>
-      Promise.resolve(
+    const fetchImplementation: typeof fetch = (_input, init) => {
+      const requestBody = init?.body;
+      if (typeof requestBody !== 'string') {
+        throw new Error('请求体必须是 JSON 字符串');
+      }
+      expect(JSON.parse(requestBody)).toMatchObject({
+        stream: true,
+        stream_options: { include_usage: true },
+      });
+      return Promise.resolve(
         new Response(responseBody, {
           headers: { 'Content-Type': 'text/event-stream' },
         }),
       );
+    };
     const model = new OpenAICompatibleChatModel(
       { apiKey: 'test-key', model: 'test-model' },
       fetchImplementation,
     );
 
-    const chunks: string[] = [];
-    for await (const chunk of model.stream([createChatMessage('user', '测试')])) {
-      chunks.push(chunk);
+    const events: ModelStreamEvent[] = [];
+    for await (const event of model.stream([createChatMessage('user', '测试')])) {
+      events.push(event);
     }
 
-    expect(chunks).toEqual(['你好']);
+    expect(events).toEqual([
+      { type: 'reasoning', content: '先分析' },
+      { type: 'content', content: '你好' },
+      { type: 'usage', usage: { inputTokens: 5, outputTokens: 7, totalTokens: 12 } },
+    ]);
   });
 
   it('maps registered tools and provider tool calls without exposing them as plain text', async () => {

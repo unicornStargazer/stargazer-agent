@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, Copy, Sparkles } from '@lucide/vue';
+import { Brain, Check, Copy, Sparkles } from '@lucide/vue';
 import { computed, onUnmounted, ref } from 'vue';
 
 import type { ConversationMessage } from '../../types/chat';
@@ -12,7 +12,9 @@ const props = defineProps<{
 
 /** 空助手消息是流生成前的内部占位，不应作为独立消息渲染。 */
 const visibleMessages = computed(() =>
-  props.messages.filter((message) => message.role === 'user' || message.content),
+  props.messages.filter(
+    (message) => message.role === 'user' || message.content || message.reasoning,
+  ),
 );
 const streamingMessageId = computed(() => {
   if (!props.busy) {
@@ -40,6 +42,20 @@ async function copyMessage(message: ConversationMessage): Promise<void> {
 }
 
 onUnmounted(() => window.clearTimeout(copyResetTimeout));
+
+function formatUsage(message: ConversationMessage): string | undefined {
+  const usage = message.usage;
+  if (usage === undefined) {
+    return undefined;
+  }
+  const values = [
+    usage.inputTokens === undefined ? undefined : `输入 ${String(usage.inputTokens)}`,
+    usage.outputTokens === undefined ? undefined : `输出 ${String(usage.outputTokens)}`,
+    usage.reasoningTokens === undefined ? undefined : `思考 ${String(usage.reasoningTokens)}`,
+    usage.totalTokens === undefined ? undefined : `共 ${String(usage.totalTokens)}`,
+  ].filter((value): value is string => value !== undefined);
+  return values.length === 0 ? undefined : `${values.join(' · ')} Tokens`;
+}
 </script>
 
 <template>
@@ -54,12 +70,21 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
       <template v-else>
         <div class="assistant-avatar" aria-hidden="true"><Sparkles /></div>
         <div class="assistant-response">
-          <MarkdownContent :content="message.content" />
+          <details
+            v-if="message.reasoning"
+            class="reasoning-panel"
+            :open="message.id === streamingMessageId"
+          >
+            <summary><Brain aria-hidden="true" /><span>思考过程</span></summary>
+            <pre>{{ message.reasoning }}</pre>
+          </details>
+          <MarkdownContent v-if="message.content" :content="message.content" />
           <span
             v-if="message.id === streamingMessageId"
             class="stream-cursor"
             aria-hidden="true"
           ></span>
+          <div v-if="formatUsage(message)" class="token-usage">{{ formatUsage(message) }}</div>
           <div v-else class="message-actions">
             <button
               class="copy-button"
@@ -143,6 +168,48 @@ onUnmounted(() => window.clearTimeout(copyResetTimeout));
   min-width: 0;
   flex: 1;
   padding-top: 3px;
+}
+
+.reasoning-panel {
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid #d9e0da;
+  border-radius: 6px;
+}
+
+.reasoning-panel summary {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--surface-strong);
+}
+
+.reasoning-panel summary :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.reasoning-panel pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.token-usage {
+  margin-top: 9px;
+  color: var(--ink-faint);
+  font-size: 11px;
 }
 
 .stream-cursor {

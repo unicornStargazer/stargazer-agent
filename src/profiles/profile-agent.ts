@@ -7,7 +7,7 @@
 import { ChatAgent } from '../chat/agent.js';
 import type { ConversationProfileStore } from '../chat/conversation-store.js';
 import type { ChatMessage } from '../chat/models.js';
-import type { ChatModel } from '../chat/port.js';
+import type { ChatModel, ModelStreamEvent } from '../chat/port.js';
 import type { ToolRegistry } from '../tools/tool-registry.js';
 import type { AgentProfile, AgentProfileSummary } from './agent-profile.js';
 import { toAgentProfileSummary } from './agent-profile.js';
@@ -91,7 +91,7 @@ export class ProfileAgent {
     sessionId: string,
     profileId: string | undefined,
     text: string,
-  ): AsyncGenerator<string> {
+  ): AsyncGenerator<ModelStreamEvent> {
     const boundProfileId = await this.conversationStore.profileId(sessionId);
     const requestedProfileId = profileId ?? boundProfileId ?? this.defaultProfileId;
     if (boundProfileId !== undefined && boundProfileId !== requestedProfileId) {

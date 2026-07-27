@@ -218,7 +218,8 @@ __marimo__/
 .streamlit/secrets.toml
 .codex/
 .idea/
-docs/
+docs/*
+!docs/backend-runtime-flow.md
 # .idea/
 
 # Node.js

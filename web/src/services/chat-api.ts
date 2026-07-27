@@ -4,6 +4,7 @@ import type {
   ApiChatMessage,
   ApiConversationMessage,
   ChatRequest,
+  TokenUsage,
 } from '../types/chat';
 
 interface ApiErrorBody {
@@ -19,6 +20,11 @@ interface ChatResponseBody {
 
 interface ConversationHistoryBody {
   readonly messages?: unknown;
+}
+
+export interface StreamChatCallbacks {
+  readonly onReasoning?: ((content: string) => void) | undefined;
+  readonly onUsage?: ((usage: TokenUsage) => void) | undefined;
 }
 
 export class ChatApiError extends Error {
@@ -67,6 +73,7 @@ export async function loadConversationHistory(
 export async function streamChatMessage(
   request: ChatRequest,
   onChunk: (content: string) => void,
+  callbacks: StreamChatCallbacks = {},
 ): Promise<void> {
   let response: Response;
   try {
@@ -106,6 +113,12 @@ export async function streamChatMessage(
         }
         if (type === 'chunk' && isRecord(value) && typeof value.content === 'string') {
           onChunk(value.content);
+        }
+        if (type === 'reasoning' && isRecord(value) && typeof value.content === 'string') {
+          callbacks.onReasoning?.(value.content);
+        }
+        if (type === 'usage' && isRecord(value) && isTokenUsage(value.usage)) {
+          callbacks.onUsage?.(value.usage);
         }
         if (type === 'error' && isRecord(value)) {
           throw new ChatApiError(
@@ -214,6 +227,16 @@ function isAgentProfile(value: unknown): value is AgentProfile {
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
     typeof value.model === 'string'
+  );
+}
+
+function isTokenUsage(value: unknown): value is TokenUsage {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.values(value).every(
+    (tokenCount) =>
+      typeof tokenCount === 'number' && Number.isSafeInteger(tokenCount) && tokenCount >= 0,
   );
 }
 
