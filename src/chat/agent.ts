@@ -1,13 +1,9 @@
-/**
- * 编排一次完整的文本对话。
- *
- * ChatAgent 只依赖模型和会话存储契约，不知道 HTTP、SQLite、Tool 或长期记忆的存在。
- */
+/** 对话领域服务：组装上下文、调用模型，并以完整轮次写入会话存储。 */
 
 import type { ConversationStore } from './conversation-store.js';
 import { InMemoryConversationStore } from './in-memory-conversation-store.js';
 import { createChatMessage, createToolCallMessage, createToolResultMessage } from './models.js';
-import type { ChatMessage } from './models.js';
+import type { ChatMessage, ToolCall } from './models.js';
 import type { ChatModel, ModelStreamEvent } from './port.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
 
@@ -17,7 +13,6 @@ export interface ChatAgentOptions {
   readonly model: ChatModel;
   readonly conversationStore?: ConversationStore | undefined;
   readonly systemPrompt?: string | undefined;
-  /** 限制送入模型的最近历史消息数量；不影响 history() 返回的完整会话。 */
   readonly historyLimit?: number | undefined;
   readonly tools?: ToolRegistry | undefined;
   readonly maximumToolRounds?: number | undefined;
@@ -40,161 +35,136 @@ export class ChatAgent {
     this.maximumToolRounds = normalizeMaximumToolRounds(options.maximumToolRounds);
   }
 
-  /**
-   * 聊天方法，处理用户输入并返回助手的回复
-   * @param sessionId 会话ID，用于标识当前对话
-   * @param text 用户输入的文本内容
-   * @returns 返回一个Promise，解析为ChatMessage类型的助手回复消息
-   */
   async chat(sessionId: string, text: string): Promise<ChatMessage> {
-    // 创建用户消息对象
-    const userMessage = createChatMessage('user', text);
-    // 构建请求消息列表，包含对话历史和当前用户消息
-    const requestMessages = await this.buildRequest(sessionId, userMessage);
-    // 调用模型获取回复文本
-    const responseText = await this.complete(requestMessages, sessionId);
-    // 创建助手消息对象
-    const assistantMessage = createChatMessage('assistant', responseText);
-    // 将用户消息和助手消息保存到会话存储中
-    await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
-    // 返回助手消息
+    const turn = await this.createTurn(sessionId, text);
+    const assistantMessage = createChatMessage(
+      'assistant',
+      await this.complete(turn.requestMessages, sessionId),
+    );
+    await this.persistTurn(sessionId, turn.userMessage, assistantMessage);
     return assistantMessage;
   }
 
-  /**
-   * 聊天流生成器函数，用于生成聊天内容的异步流
-   * @param sessionId 会话ID，用于标识当前对话
-   * @param text 用户输入的文本内容
-   * @returns 返回一个异步生成器，用于逐步产生聊天响应
-   */
   async *chatStream(sessionId: string, text: string): AsyncGenerator<ModelStreamEvent> {
-    // 创建用户消息对象
+    const turn = await this.createTurn(sessionId, text);
+
+    if (this.tools.isEmpty() && this.model.stream !== undefined) {
+      yield* this.streamTurn(sessionId, turn.userMessage, turn.requestMessages);
+      return;
+    }
+
+    const assistantMessage = createChatMessage(
+      'assistant',
+      await this.complete(turn.requestMessages, sessionId),
+    );
+    await this.persistTurn(sessionId, turn.userMessage, assistantMessage);
+    yield { type: 'content', content: assistantMessage.content };
+  }
+
+  async history(sessionId: string): Promise<readonly ChatMessage[]> {
+    return this.conversationStore.messages(sessionId);
+  }
+
+  async clearHistory(sessionId: string): Promise<void> {
+    await this.conversationStore.clear(sessionId);
+  }
+
+  private async createTurn(sessionId: string, text: string): Promise<ConversationTurn> {
     const userMessage = createChatMessage('user', text);
-    // 构建请求消息列表，包含会话历史和当前用户消息
-    const requestMessages = await this.buildRequest(sessionId, userMessage);
-    // 如果启用了工具功能
-    if (!this.tools.isEmpty()) {
-      // 获取完整响应
-      const response = await this.complete(requestMessages, sessionId);
-      // 创建助手消息对象
-      const assistantMessage = createChatMessage('assistant', response);
-      // 将用户和助手消息添加到会话存储中
-      await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
-      // 返回完整响应
-      yield { type: 'content', content: response };
-      return;
-    }
-    // 如果模型不支持流式响应
-    if (this.model.stream === undefined) {
-      // 获取聊天响应
-      const response = await this.chat(sessionId, text);
-      // 返回响应内容
-      yield { type: 'content', content: response.content };
-      return;
-    }
-    let content = ''; // 用于累积流式响应的内容
-    // 遍历流式响应的每个数据块
-    for await (const event of this.model.stream(requestMessages)) {
+    const history = await this.conversationStore.messages(sessionId, this.historyLimit);
+    const systemMessages =
+      this.systemPrompt === undefined ? [] : [createChatMessage('system', this.systemPrompt)];
+    return { userMessage, requestMessages: [...systemMessages, ...history, userMessage] };
+  }
+
+  private async *streamTurn(
+    sessionId: string,
+    userMessage: ChatMessage,
+    requestMessages: readonly ChatMessage[],
+  ): AsyncGenerator<ModelStreamEvent> {
+    let content = '';
+    for await (const event of this.model.stream!(requestMessages)) {
       if (event.type === 'content') {
         content += event.content;
       }
       yield event;
     }
-    // 创建助手消息对象
-    const assistantMessage = createChatMessage('assistant', content);
-    // 将用户和助手消息添加到会话存储中
-    await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
+    await this.persistTurn(sessionId, userMessage, createChatMessage('assistant', content));
   }
 
-  /** 返回不包含每轮系统提示的完整服务端会话历史。 */
-  async history(sessionId: string): Promise<readonly ChatMessage[]> {
-    return this.conversationStore.messages(sessionId);
-  }
-
-  /** 删除指定会话；具体存储实现保证删除的持久化语义。 */
-  async clearHistory(sessionId: string): Promise<void> {
-    await this.conversationStore.clear(sessionId);
-  }
-
-  private async buildRequest(
-    sessionId: string,
-    userMessage: ChatMessage,
-  ): Promise<readonly ChatMessage[]> {
-    const history = await this.conversationStore.messages(sessionId, this.historyLimit);
-    const systemMessages =
-      this.systemPrompt === undefined ? [] : [createChatMessage('system', this.systemPrompt)];
-    return [...systemMessages, ...history, userMessage];
-  }
-
-  /**
-   * 使用工具完成对话的私有异步方法
-   * @param messages - 聊天消息的只读数组
-   * @param sessionId - 会话ID
-   * @returns 返回完成的文本内容
-   */
   private async complete(messages: readonly ChatMessage[], sessionId: string): Promise<string> {
-    // 检查是否有可用工具以及模型是否支持工具完成功能
     if (this.tools.isEmpty() || this.model.completeWithTools === undefined) {
-      // 如果没有工具或模型不支持工具完成，直接使用模型完成对话
       return this.model.complete(messages);
     }
 
-    // 创建请求消息的副本，用于迭代处理
+    // 工具调用会修改本次请求上下文，不能污染调用方传入的历史消息数组。
     const requestMessages = [...messages];
-    // 最大工具调用轮次的循环处理
     for (let round = 0; round < this.maximumToolRounds; round += 1) {
-      // 使用工具调用模型完成对话
       const completion = await this.model.completeWithTools(
         requestMessages,
         this.tools.definitions(),
       );
-      // 如果没有工具调用，直接返回完成的内容
       if (completion.toolCalls.length === 0) {
         return completion.content;
       }
-      // 添加工具调用消息到请求消息列表
-      requestMessages.push(createToolCallMessage(completion.toolCalls));
-      // 执行所有工具调用并处理结果
-      for (const toolCall of completion.toolCalls) {
-        // 执行工具调用并传入会话ID
-        const result = await this.tools.execute(toolCall.name, toolCall.arguments, { sessionId });
-        // 添加工具执行结果到请求消息列表
-        requestMessages.push(createToolResultMessage(toolCall.id, toolCall.name, result));
-      }
+      await this.appendToolResults(requestMessages, completion.toolCalls, sessionId);
     }
-    // 如果超过最大工具调用轮次，抛出错误
+    // 防止模型持续要求工具调用而形成无界循环。
     throw new Error(`Tool call limit (${String(this.maximumToolRounds)}) exceeded.`);
   }
+
+  /** 工具调用仅参与当前模型上下文，不作为最终会话历史持久化。 */
+  private async appendToolResults(
+    requestMessages: ChatMessage[],
+    toolCalls: readonly ToolCall[],
+    sessionId: string,
+  ): Promise<void> {
+    requestMessages.push(createToolCallMessage(toolCalls));
+    for (const toolCall of toolCalls) {
+      const result = await this.tools.execute(toolCall.name, toolCall.arguments, { sessionId });
+      requestMessages.push(createToolResultMessage(toolCall.id, toolCall.name, result));
+    }
+  }
+
+  private async persistTurn(
+    sessionId: string,
+    userMessage: ChatMessage,
+    assistantMessage: ChatMessage,
+  ): Promise<void> {
+    await this.conversationStore.append(sessionId, [userMessage, assistantMessage]);
+  }
 }
 
-function normalizeSystemPrompt(systemPrompt: string | undefined): string | undefined {
-  if (systemPrompt === undefined) {
+interface ConversationTurn {
+  readonly userMessage: ChatMessage;
+  readonly requestMessages: readonly ChatMessage[];
+}
+
+function normalizeSystemPrompt(value: string | undefined): string | undefined {
+  if (value === undefined) {
     return undefined;
   }
-  if (typeof systemPrompt !== 'string') {
-    throw new TypeError('系统提示必须是字符串');
-  }
-  const normalizedSystemPrompt = systemPrompt.trim();
-  if (!normalizedSystemPrompt) {
+  const systemPrompt = value.trim();
+  if (!systemPrompt) {
     throw new Error('系统提示不能为空');
   }
-  return normalizedSystemPrompt;
+  return systemPrompt;
 }
 
-function normalizeHistoryLimit(historyLimit: number | undefined): number | undefined {
-  if (historyLimit === undefined) {
+function normalizeHistoryLimit(value: number | undefined): number | undefined {
+  if (value === undefined) {
     return undefined;
   }
-  if (!Number.isSafeInteger(historyLimit) || historyLimit < 1) {
+  if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError('历史消息窗口必须是大于零的安全整数');
   }
-  return historyLimit;
+  return value;
 }
 
-function normalizeMaximumToolRounds(maximumToolRounds: number | undefined): number {
-  const value = maximumToolRounds ?? DEFAULT_MAXIMUM_TOOL_ROUNDS;
-  if (!Number.isSafeInteger(value) || value < 1) {
+function normalizeMaximumToolRounds(value: number | undefined): number {
+  const maximumToolRounds = value ?? DEFAULT_MAXIMUM_TOOL_ROUNDS;
+  if (!Number.isSafeInteger(maximumToolRounds) || maximumToolRounds < 1) {
     throw new RangeError('Maximum tool rounds must be a positive safe integer.');
   }
-  return value;
+  return maximumToolRounds;
 }

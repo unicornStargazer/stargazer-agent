@@ -32,7 +32,10 @@ export function createChatMessage(role: ChatRole, content: string): ChatMessage 
   return { role, content: normalizedContent };
 }
 
-/** Creates a transient assistant message that asks the provider to execute tools. */
+/**
+ * 创建仅供当前模型请求使用的工具调用消息。
+ * 它不会写入会话历史，避免下一轮对话携带无法重新执行的旧工具调用。
+ */
 export function createToolCallMessage(toolCalls: readonly ToolCall[]): ChatMessage {
   if (toolCalls.length === 0) {
     throw new Error('At least one tool call is required.');
@@ -40,7 +43,7 @@ export function createToolCallMessage(toolCalls: readonly ToolCall[]): ChatMessa
   return { role: 'assistant', content: '', toolCalls };
 }
 
-/** Creates a transient tool result message for the next model request. */
+/** 创建与工具调用 ID 对应的临时结果消息，供模型继续组织最终回复。 */
 export function createToolResultMessage(
   toolCallId: string,
   name: string,

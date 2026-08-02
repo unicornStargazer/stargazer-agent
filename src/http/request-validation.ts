@@ -1,4 +1,8 @@
-/** HTTP 请求体和路径参数校验，集中维护外部输入边界。 */
+/**
+ * HTTP 请求体与路径参数校验，集中维护外部输入边界。
+ *
+ * 这里返回的值已经完成空白裁剪和长度限制，应用层可以将其视为可信命令对象。
+ */
 
 import { HttpError } from './http-error.js';
 
@@ -9,35 +13,30 @@ export interface ChatRequestBody {
   readonly profileId: string | undefined;
 }
 
-/**
- * 验证聊天请求的数据格式和内容
- * @param value - 未知类型的输入值，将被验证为聊天请求体
- * @param maximumMessageLength - 消息的最大允许长度
- * @param maximumIdentifierLength - 标识符的最大允许长度
- * @returns 返回经过验证和格式化的 ChatRequestBody 对象
- * @throws 当请求不符合要求时抛出 HttpError
- */
 export function validateChatRequest(
-  value: unknown, // 输入的未知类型值，需要进行验证
-  maximumMessageLength: number, // 消息的最大长度限制
-  maximumIdentifierLength: number, // 标识符的最大长度限制
-): ChatRequestBody { // 函数返回类型为 ChatRequestBody
-  // 检查输入值是否为非空对象且不是数组
+  value: unknown,
+  maximumMessageLength: number,
+  maximumIdentifierLength: number,
+): ChatRequestBody {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new HttpError(400, 'INVALID_REQUEST', '请求内容必须是 JSON 对象。');
   }
-  const body = value as Record<string, unknown>; // 将输入值断言为记录对象
+
+  const body = value as Record<string, unknown>;
   return {
-    sessionId: requireIdentifier(body.sessionId, 'sessionId', maximumIdentifierLength), // 验证并获取会话ID
-    requestId: requireIdentifier(body.requestId, 'requestId', maximumIdentifierLength), // 验证并获取请求ID
-    message: requireText(body.message, 'message', maximumMessageLength), // 验证并获取消息内容
-    profileId: // 处理可选的配置文件ID
+    sessionId: requireIdentifier(body.sessionId, 'sessionId', maximumIdentifierLength),
+    requestId: requireIdentifier(body.requestId, 'requestId', maximumIdentifierLength),
+    message: requireText(body.message, 'message', maximumMessageLength),
+    profileId:
       body.profileId === undefined
         ? undefined
         : requireIdentifier(body.profileId, 'profileId', maximumIdentifierLength),
   };
 }
 
+/**
+ * 标识符用于会话、请求和 Profile 的索引，因此限制为 URL 与存储均可安全处理的字符集。
+ */
 export function requireIdentifier(
   value: unknown,
   fieldName: string,
@@ -51,10 +50,13 @@ export function requireIdentifier(
 }
 
 function requireText(value: unknown, fieldName: string, maximumLength: number): string {
-  if (typeof value !== 'string')
+  if (typeof value !== 'string') {
     throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 必须是字符串。`);
+  }
   const normalizedValue = value.trim();
-  if (!normalizedValue) throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 不能为空。`);
+  if (!normalizedValue) {
+    throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 不能为空。`);
+  }
   if (normalizedValue.length > maximumLength) {
     throw new HttpError(400, 'INVALID_REQUEST', `${fieldName} 超出长度限制。`);
   }
