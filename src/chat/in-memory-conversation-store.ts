@@ -52,10 +52,6 @@ export class InMemoryConversationStore implements ConversationProfileStore {
   bindProfile(sessionId: string, profileId: string): Promise<void> {
     const normalizedSessionId = normalizeConversationSessionId(sessionId);
     const normalizedProfileId = normalizeConversationSessionId(profileId);
-    const existingProfileId = this.profileBySession.get(normalizedSessionId);
-    if (existingProfileId !== undefined && existingProfileId !== normalizedProfileId) {
-      return Promise.reject(new Error('会话已绑定其他 Profile'));
-    }
     this.profileBySession.set(normalizedSessionId, normalizedProfileId);
     return Promise.resolve();
   }

@@ -13,8 +13,8 @@ import {
   normalizeConversationSessionId,
 } from '../chat/conversation-store.js';
 import type { ConversationProfileStore } from '../chat/conversation-store.js';
-import { createChatMessage } from '../chat/models.js';
-import type { ChatMessage, ChatRole } from '../chat/models.js';
+import { createAssistantMessage, createChatMessage } from '../chat/models.js';
+import type { ChatMessage, ChatRole, ModelTokenUsage } from '../chat/models.js';
 
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const require = createRequire(import.meta.url);
@@ -34,6 +34,8 @@ const SCHEMA_SQL = `
     sequence INTEGER NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,
+    reasoning TEXT,
+    usage_json TEXT,
     created_at_ms INTEGER NOT NULL,
     PRIMARY KEY (session_id, sequence),
     FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE
@@ -46,6 +48,8 @@ const SCHEMA_SQL = `
 interface MessageRow {
   readonly role: string;
   readonly content: string;
+  readonly reasoning: string | null;
+  readonly usage_json: string | null;
 }
 
 interface SequenceRow {
@@ -83,6 +87,7 @@ export class SqliteConversationStore implements ConversationProfileStore {
       await execute(database, 'PRAGMA foreign_keys = ON');
       await executeScript(database, SCHEMA_SQL);
       await ensureProfileColumn(database);
+      await ensureMessageMetadataColumns(database);
       return store;
     } catch (error: unknown) {
       await closeDatabase(database).catch(() => undefined);
@@ -98,7 +103,7 @@ export class SqliteConversationStore implements ConversationProfileStore {
         normalizedLimit === undefined
           ? await query<MessageRow>(
               this.database,
-              `SELECT role, content
+              `SELECT role, content, reasoning, usage_json
                FROM conversation_messages
                WHERE session_id = ?
                ORDER BY sequence ASC`,
@@ -106,9 +111,9 @@ export class SqliteConversationStore implements ConversationProfileStore {
             )
           : await query<MessageRow>(
               this.database,
-              `SELECT role, content
+              `SELECT role, content, reasoning, usage_json
                FROM (
-                 SELECT role, content, sequence
+                 SELECT role, content, reasoning, usage_json, sequence
                  FROM conversation_messages
                  WHERE session_id = ?
                  ORDER BY sequence DESC
@@ -170,9 +175,18 @@ export class SqliteConversationStore implements ConversationProfileStore {
         for (const [offset, message] of messages.entries()) {
           await execute(
             this.database,
-            `INSERT INTO conversation_messages (session_id, sequence, role, content, created_at_ms)
-             VALUES (?, ?, ?, ?, ?)`,
-            [normalizedSessionId, nextSequence + offset, message.role, message.content, timestamp],
+            `INSERT INTO conversation_messages
+             (session_id, sequence, role, content, reasoning, usage_json, created_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              normalizedSessionId,
+              nextSequence + offset,
+              message.role,
+              message.content,
+              message.reasoning ?? null,
+              serializeUsage(message.usage),
+              timestamp,
+            ],
           );
         }
         // 提交事务
@@ -214,24 +228,16 @@ export class SqliteConversationStore implements ConversationProfileStore {
       const timestamp = Date.now();
       await execute(this.database, 'BEGIN IMMEDIATE');
       try {
-        const existing = await queryOne<{ readonly profile_id: string | null }>(
+        // 仅更新会话元数据，消息表不参与本次事务，历史上下文保持不变。
+        await execute(
           this.database,
-          'SELECT profile_id FROM conversation_sessions WHERE session_id = ?',
-          [normalizedSessionId],
+          `INSERT INTO conversation_sessions (session_id, profile_id, created_at_ms, updated_at_ms)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             profile_id = excluded.profile_id,
+             updated_at_ms = excluded.updated_at_ms`,
+          [normalizedSessionId, normalizedProfileId, timestamp, timestamp],
         );
-        if (existing?.profile_id !== null && existing?.profile_id !== undefined) {
-          if (existing.profile_id !== normalizedProfileId) {
-            throw new Error('会话已绑定其他 Profile');
-          }
-        } else {
-          await execute(
-            this.database,
-            `INSERT INTO conversation_sessions (session_id, profile_id, created_at_ms, updated_at_ms)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(session_id) DO UPDATE SET profile_id = excluded.profile_id`,
-            [normalizedSessionId, normalizedProfileId, timestamp, timestamp],
-          );
-        }
         await execute(this.database, 'COMMIT');
       } catch (error: unknown) {
         await rollback(this.database);
@@ -296,6 +302,13 @@ function toChatMessage(row: MessageRow): ChatMessage {
   if (!isPersistedRole(row.role)) {
     throw new Error('会话历史包含未知消息角色');
   }
+  if (row.role === 'assistant') {
+    return createAssistantMessage(
+      row.content,
+      row.reasoning ?? undefined,
+      parseUsage(row.usage_json),
+    );
+  }
   return createChatMessage(row.role, row.content);
 }
 
@@ -321,6 +334,50 @@ async function ensureProfileColumn(database: SqliteDatabase): Promise<void> {
   if (!columns.some((column) => column.name === 'profile_id')) {
     await execute(database, 'ALTER TABLE conversation_sessions ADD COLUMN profile_id TEXT');
   }
+}
+
+/**
+ * 增量迁移旧数据库。两个新列可空，因此历史记录无需重写，缺失元数据按未提供处理。
+ */
+async function ensureMessageMetadataColumns(database: SqliteDatabase): Promise<void> {
+  const columns = await query<TableColumnRow>(database, 'PRAGMA table_info(conversation_messages)');
+  if (!columns.some((column) => column.name === 'reasoning')) {
+    await execute(database, 'ALTER TABLE conversation_messages ADD COLUMN reasoning TEXT');
+  }
+  if (!columns.some((column) => column.name === 'usage_json')) {
+    await execute(database, 'ALTER TABLE conversation_messages ADD COLUMN usage_json TEXT');
+  }
+}
+
+function serializeUsage(usage: ModelTokenUsage | undefined): string | null {
+  return usage === undefined ? null : JSON.stringify(usage);
+}
+
+function parseUsage(value: string | null | undefined): ModelTokenUsage | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  try {
+    const parsedValue = JSON.parse(value) as unknown;
+    if (!isTokenUsage(parsedValue)) {
+      throw new Error('Token 用量格式无效');
+    }
+    return parsedValue;
+  } catch (error) {
+    throw new Error(
+      `会话历史中的 Token 用量无法读取: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function isTokenUsage(value: unknown): value is ModelTokenUsage {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  return Object.values(value).every(
+    (tokenCount) =>
+      typeof tokenCount === 'number' && Number.isSafeInteger(tokenCount) && tokenCount >= 0,
+  );
 }
 
 function closeDatabase(database: SqliteDatabase): Promise<void> {

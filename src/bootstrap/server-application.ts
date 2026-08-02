@@ -30,24 +30,28 @@ export interface ServerApplication {
 }
 
 export async function createServerApplication(): Promise<ServerApplication> {
-  const configuration = loadRuntimeConfiguration();
+  const configuration = await loadRuntimeConfiguration();
   await mkdir(dirname(configuration.databasePath), { recursive: true });
 
   const conversationStore = await SqliteConversationStore.open({
     databasePath: configuration.databasePath,
   });
   const profiles = await loadAgentProfiles(configuration);
+  const defaultProfile = profiles.find((profile) => profile.id === configuration.defaultProfileId);
+  if (defaultProfile === undefined) {
+    throw new Error('默认 Agent Profile 不存在');
+  }
   const createModel = createModelFactory(configuration.provider);
   const profileAgent = new ProfileAgent({
     profiles,
-    defaultProfileId: profiles[0]!.id,
+    defaultProfileId: configuration.defaultProfileId,
     conversationStore,
     createModel: (profile) => createModel(profile.model),
   });
   const agent = new ChatAgent({
     model: createModel(configuration.defaultModel),
     conversationStore,
-    systemPrompt: profiles[0]!.systemPrompt,
+    systemPrompt: defaultProfile.systemPrompt,
   });
   const app = createHttpApp({
     agent,

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { ChatAgent } from '../../src/chat/agent.js';
 import type { ConversationStore } from '../../src/chat/conversation-store.js';
 import type { ChatMessage } from '../../src/chat/models.js';
+import type { ChatModel } from '../../src/chat/port.js';
 import { FakeChatModel } from '../../src/providers/fake-chat-model.js';
 
 describe('ChatAgent', () => {
@@ -70,6 +71,30 @@ describe('ChatAgent', () => {
       ],
     ]);
   });
+
+  it('流式回复完成后持久化思考过程与 Token 用量', async () => {
+    const agent = new ChatAgent({ model: new MetadataStreamChatModel() });
+
+    const events = [];
+    for await (const event of agent.chatStream('demo', '解释这个问题')) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: 'reasoning', content: '先检查输入' },
+      { type: 'content', content: '这是回答' },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: 8, totalTokens: 18 } },
+    ]);
+    await expect(agent.history('demo')).resolves.toEqual([
+      { role: 'user', content: '解释这个问题' },
+      {
+        role: 'assistant',
+        content: '这是回答',
+        reasoning: '先检查输入',
+        usage: { inputTokens: 10, outputTokens: 8, totalTokens: 18 },
+      },
+    ]);
+  });
 });
 
 class RejectingConversationStore implements ConversationStore {
@@ -86,5 +111,21 @@ class RejectingConversationStore implements ConversationStore {
 
   clear(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class MetadataStreamChatModel implements ChatModel {
+  complete(): Promise<string> {
+    return Promise.resolve('这是回答');
+  }
+
+  async *stream() {
+    await Promise.resolve();
+    yield { type: 'reasoning' as const, content: '先检查输入' };
+    yield { type: 'content' as const, content: '这是回答' };
+    yield {
+      type: 'usage' as const,
+      usage: { inputTokens: 10, outputTokens: 8, totalTokens: 18 },
+    };
   }
 }

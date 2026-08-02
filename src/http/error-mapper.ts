@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 
 import { RequestConflictError, SessionBusyError } from '../application/conversation-service.js';
 import { ConversationStoreError } from '../chat/index.js';
-import { ConversationProfileConflictError, UnknownAgentProfileError } from '../profiles/index.js';
+import { UnknownAgentProfileError } from '../profiles/index.js';
 import { HttpError } from './http-error.js';
 
 export function registerErrorHandler(app: FastifyInstance): void {
@@ -29,9 +29,6 @@ export function mapHttpError(error: unknown): HttpError {
   }
   if (error instanceof UnknownAgentProfileError) {
     return new HttpError(400, 'UNKNOWN_PROFILE', '请求的 Agent Profile 不存在。');
-  }
-  if (error instanceof ConversationProfileConflictError) {
-    return new HttpError(409, 'PROFILE_CONFLICT', '会话已绑定其他 Agent Profile。');
   }
   if (error instanceof ConversationStoreError) {
     return new HttpError(

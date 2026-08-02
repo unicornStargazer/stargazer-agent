@@ -2,8 +2,13 @@
 
 import type { ConversationStore } from './conversation-store.js';
 import { InMemoryConversationStore } from './in-memory-conversation-store.js';
-import { createChatMessage, createToolCallMessage, createToolResultMessage } from './models.js';
-import type { ChatMessage, ToolCall } from './models.js';
+import {
+  createAssistantMessage,
+  createChatMessage,
+  createToolCallMessage,
+  createToolResultMessage,
+} from './models.js';
+import type { ChatMessage, ModelTokenUsage, ToolCall } from './models.js';
 import type { ChatModel, ModelStreamEvent } from './port.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
 
@@ -37,8 +42,7 @@ export class ChatAgent {
 
   async chat(sessionId: string, text: string): Promise<ChatMessage> {
     const turn = await this.createTurn(sessionId, text);
-    const assistantMessage = createChatMessage(
-      'assistant',
+    const assistantMessage = createAssistantMessage(
       await this.complete(turn.requestMessages, sessionId),
     );
     await this.persistTurn(sessionId, turn.userMessage, assistantMessage);
@@ -53,8 +57,7 @@ export class ChatAgent {
       return;
     }
 
-    const assistantMessage = createChatMessage(
-      'assistant',
+    const assistantMessage = createAssistantMessage(
       await this.complete(turn.requestMessages, sessionId),
     );
     await this.persistTurn(sessionId, turn.userMessage, assistantMessage);
@@ -83,13 +86,25 @@ export class ChatAgent {
     requestMessages: readonly ChatMessage[],
   ): AsyncGenerator<ModelStreamEvent> {
     let content = '';
+    let reasoning = '';
+    let usage: ModelTokenUsage | undefined;
     for await (const event of this.model.stream!(requestMessages)) {
       if (event.type === 'content') {
         content += event.content;
       }
+      if (event.type === 'reasoning') {
+        reasoning += event.content;
+      }
+      if (event.type === 'usage') {
+        usage = event.usage;
+      }
       yield event;
     }
-    await this.persistTurn(sessionId, userMessage, createChatMessage('assistant', content));
+    await this.persistTurn(
+      sessionId,
+      userMessage,
+      createAssistantMessage(content, reasoning || undefined, usage),
+    );
   }
 
   private async complete(messages: readonly ChatMessage[], sessionId: string): Promise<string> {

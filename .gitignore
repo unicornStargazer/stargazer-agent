@@ -220,6 +220,8 @@ __marimo__/
 .idea/
 docs/*
 !docs/backend-runtime-flow.md
+!docs/configuration.md
+!docs/model-switching.md
 # .idea/
 
 # Node.js
@@ -228,6 +230,7 @@ npm-debug.log*
 
 # Stargazer Agent 本地会话数据库
 /data/
+config/stargazer-agent.json
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal

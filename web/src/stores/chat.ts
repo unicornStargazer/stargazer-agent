@@ -106,18 +106,10 @@ export const useChatStore = defineStore('chat', () => {
       selectedProfileId.value = conversation.profileId;
       return;
     }
-    if (conversation.messages.length === 0) {
-      conversation.profileId = fallbackProfileId;
-      selectedProfileId.value = fallbackProfileId;
-      persistWorkspace();
-      return;
-    }
-    const replacement = createConversation(fallbackProfileId);
-    conversations.value.unshift(replacement);
-    activeConversationId.value = replacement.id;
+    conversation.profileId = fallbackProfileId;
     selectedProfileId.value = fallbackProfileId;
     persistWorkspace();
-    setNotice('原会话使用的 Agent 已不可用，已为你新建默认 Agent 会话。');
+    setNotice('原模型已不可用，后续对话将使用默认模型继续。');
   }
 
   function selectProfile(profileId: string): void {
@@ -133,16 +125,10 @@ export const useChatStore = defineStore('chat', () => {
       return;
     }
     selectedProfileId.value = profileId;
-    // 已有消息的会话必须维持原 Profile；切换时主动开始新会话而不是让用户碰到冲突错误。
-    if (conversation !== undefined && conversation.messages.length === 0) {
+    if (conversation !== undefined) {
       conversation.profileId = profileId;
       persistWorkspace();
-      return;
     }
-    const replacement = createConversation(profileId);
-    conversations.value.unshift(replacement);
-    activeConversationId.value = replacement.id;
-    persistWorkspace();
   }
 
   function renameConversation(conversationId: string, title: string): boolean {
@@ -183,6 +169,8 @@ export const useChatStore = defineStore('chat', () => {
             id: canReuseLocalMessage ? localMessage.id : createIdentifier('message'),
             role: message.role,
             content: message.content,
+            reasoning: message.reasoning,
+            usage: message.usage,
             requestId:
               canReuseLocalMessage && message.role === 'user' ? localMessage.requestId : undefined,
           };

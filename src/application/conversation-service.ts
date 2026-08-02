@@ -1,6 +1,6 @@
 /** 应用服务：协调请求幂等、同会话串行和 Agent 调用，不包含 HTTP 或持久化实现细节。 */
 
-import type { ChatMessage, ModelStreamEvent } from '../chat/index.js';
+import type { ChatMessage, ModelStreamEvent, ModelTokenUsage } from '../chat/index.js';
 
 export interface ConversationCommand {
   readonly sessionId: string;
@@ -108,6 +108,8 @@ export class ConversationService {
     onEvent: (event: ModelStreamEvent) => void,
   ): Promise<ChatMessage> {
     let content = '';
+    let reasoning = '';
+    let usage: ModelTokenUsage | undefined;
     for await (const event of this.agent.chatStream(
       command.sessionId,
       command.profileId,
@@ -116,9 +118,20 @@ export class ConversationService {
       if (event.type === 'content') {
         content += event.content;
       }
+      if (event.type === 'reasoning') {
+        reasoning += event.content;
+      }
+      if (event.type === 'usage') {
+        usage = event.usage;
+      }
       onEvent(event);
     }
-    return { role: 'assistant', content };
+    return {
+      role: 'assistant',
+      content,
+      ...(reasoning ? { reasoning } : {}),
+      ...(usage === undefined ? {} : { usage }),
+    };
   }
 
   private async getOrCreate(

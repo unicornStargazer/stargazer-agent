@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, Check, ChevronDown, RotateCcw } from '@lucide/vue';
+import { Check, ChevronDown, Cpu, RotateCcw } from '@lucide/vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import type { AgentProfile, ProfileLoadState } from '../../types/chat';
@@ -27,12 +27,12 @@ const menuAvailable = computed(
 );
 const triggerLabel = computed(() => {
   if (props.state === 'loading') {
-    return '正在加载 Agent';
+    return '正在加载模型';
   }
   if (props.state === 'error') {
-    return 'Agent 加载失败';
+    return '模型加载失败';
   }
-  return selectedProfile.value?.name ?? '选择 Agent';
+  return selectedProfile.value?.model ?? '选择模型';
 });
 
 function toggleMenu(): void {
@@ -96,25 +96,25 @@ onUnmounted(() => {
       :aria-haspopup="menuAvailable ? 'menu' : undefined"
       :aria-expanded="menuAvailable ? open : undefined"
       :aria-label="triggerLabel"
-      :title="selectedProfile ? `${selectedProfile.name} · ${selectedProfile.model}` : triggerLabel"
+      :title="selectedProfile ? `${selectedProfile.model} (${selectedProfile.name})` : triggerLabel"
       :disabled="disabled || state === 'loading'"
       @click="toggleMenu"
     >
-      <Bot class="profile-icon" />
+      <Cpu class="profile-icon" />
       <span>
         <strong>{{ triggerLabel }}</strong>
-        <small v-if="selectedProfile">{{ selectedProfile.model }}</small>
+        <small v-if="selectedProfile">{{ selectedProfile.name }}</small>
       </span>
       <ChevronDown v-if="menuAvailable" class="profile-chevron" />
     </button>
 
     <div v-if="open" class="profile-popover">
       <div v-if="state === 'error'" class="profile-error" role="alert">
-        <span>{{ error ?? 'Agent Profile 加载失败' }}</span>
+        <span>{{ error ?? '模型列表加载失败' }}</span>
         <button type="button" @click="retryProfiles"><RotateCcw />重试</button>
       </div>
-      <div v-else-if="state === 'empty'" class="profile-empty">没有可用的 Agent</div>
-      <div v-else class="profile-options" role="menu" aria-label="Agent Profile">
+      <div v-else-if="state === 'empty'" class="profile-empty">没有可用模型</div>
+      <div v-else class="profile-options" role="menu" aria-label="模型列表">
         <button
           v-for="profile in profiles"
           :key="profile.id"
@@ -124,8 +124,8 @@ onUnmounted(() => {
           @click="selectProfile(profile.id)"
         >
           <span>
-            <strong>{{ profile.name }}</strong>
-            <small>{{ profile.model }}</small>
+            <strong>{{ profile.model }}</strong>
+            <small>{{ profile.name }}</small>
           </span>
           <Check v-if="profile.id === selectedProfileId" />
         </button>

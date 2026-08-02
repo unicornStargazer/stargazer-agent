@@ -79,11 +79,25 @@ function isStoredMessage(value: unknown): value is ConversationMessage {
     return false;
   }
   const requestIdValid = value.requestId === undefined || typeof value.requestId === 'string';
+  const reasoningValid = value.reasoning === undefined || typeof value.reasoning === 'string';
+  const usageValid = value.usage === undefined || isTokenUsage(value.usage);
   return (
     typeof value.id === 'string' &&
     (value.role === 'user' || value.role === 'assistant') &&
     typeof value.content === 'string' &&
-    requestIdValid
+    requestIdValid &&
+    reasoningValid &&
+    usageValid
+  );
+}
+
+function isTokenUsage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (tokenCount) =>
+        typeof tokenCount === 'number' && Number.isSafeInteger(tokenCount) && tokenCount >= 0,
+    )
   );
 }
 

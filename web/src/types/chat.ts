@@ -61,6 +61,8 @@ export interface ApiChatMessage {
 export interface ApiConversationMessage {
   readonly role: ConversationRole;
   readonly content: string;
+  readonly reasoning?: string | undefined;
+  readonly usage?: TokenUsage | undefined;
 }
 
 export type ProfileLoadState = 'loading' | 'ready' | 'empty' | 'error';

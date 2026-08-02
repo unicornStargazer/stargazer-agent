@@ -21,7 +21,9 @@ npm test
 
 ## 配置
 
-密钥只从环境变量读取，不要把它写入源码或提交到仓库。
+> 当前版本仅读取 `config/stargazer-agent.json`，不再读取模型、密钥或端口相关的环境变量。请参阅 [服务端配置](docs/configuration.md) 和 [模型切换](docs/model-switching.md)。以下环境变量示例仅适用于历史版本。
+
+历史环境变量配置如下，仅供迁移参考，不再被当前服务读取。
 
 ```powershell
 $env:OPENAI_API_KEY = "你的密钥"

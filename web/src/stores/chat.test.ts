@@ -125,7 +125,7 @@ describe('chat store', () => {
     expect(store.deletingConversationIds).toEqual([]);
   });
 
-  it('starts a new conversation when selecting another Profile after a message exists', async () => {
+  it('keeps the current conversation when selecting another Profile after a message exists', async () => {
     vi.mocked(streamChatMessage).mockImplementationOnce((_request, onChunk) =>
       Promise.resolve(onChunk('回复')),
     );
@@ -137,10 +137,10 @@ describe('chat store', () => {
     store.selectProfile('detailed');
 
     expect(store.selectedProfileId).toBe('detailed');
-    expect(store.activeConversationId).not.toBe(originalConversationId);
-    expect(store.activeConversation).toMatchObject({ profileId: 'detailed', messages: [] });
+    expect(store.activeConversationId).toBe(originalConversationId);
+    expect(store.activeConversation).toMatchObject({ profileId: 'detailed' });
     expect(store.conversations.find((item) => item.id === originalConversationId)?.profileId).toBe(
-      'default',
+      'detailed',
     );
   });
 
@@ -214,6 +214,31 @@ describe('chat store', () => {
     expect(store.activeConversationId).toBe(secondConversation.id);
     expect(store.conversations.find((item) => item.id === firstConversation.id)?.messages).toEqual([
       expect.objectContaining({ role: 'assistant', content: '服务端最终回复' }),
+    ]);
+  });
+
+  it('restores persisted reasoning and Token usage from server history', async () => {
+    vi.mocked(loadConversationHistory).mockResolvedValueOnce([
+      {
+        role: 'assistant',
+        content: '服务端回答',
+        reasoning: '服务端思考过程',
+        usage: { inputTokens: 11, outputTokens: 9, totalTokens: 20 },
+      },
+    ]);
+    const store = useChatStore();
+    store.initialize();
+    const conversationId = store.activeConversationId;
+
+    await store.syncConversationHistory(conversationId ?? '');
+
+    expect(store.activeConversation?.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: '服务端回答',
+        reasoning: '服务端思考过程',
+        usage: { inputTokens: 11, outputTokens: 9, totalTokens: 20 },
+      }),
     ]);
   });
 

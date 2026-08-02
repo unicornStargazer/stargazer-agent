@@ -7,7 +7,12 @@ import { Database } from 'sqlite3';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ChatAgent, ConversationStoreError, createChatMessage } from '../../src/chat/index.js';
+import {
+  ChatAgent,
+  ConversationStoreError,
+  createAssistantMessage,
+  createChatMessage,
+} from '../../src/chat/index.js';
 import { SqliteConversationStore } from '../../src/memory/index.js';
 import { FakeChatModel } from '../../src/providers/index.js';
 
@@ -102,6 +107,34 @@ describe('SqliteConversationStore', () => {
     await expect(store.messages('session-a', 2)).resolves.toEqual([
       { role: 'user', content: '问题二' },
       { role: 'assistant', content: '回答二' },
+    ]);
+  });
+
+  it('重启后保留助手的思考过程与 Token 用量', async () => {
+    const databasePath = await createTemporaryDatabasePath();
+    const firstStore = await openStore(databasePath);
+    await firstStore.append('session-a', [
+      createChatMessage('user', '解释这个问题'),
+      createAssistantMessage('这是回答', '先分析边界条件', {
+        inputTokens: 12,
+        outputTokens: 20,
+        reasoningTokens: 8,
+        totalTokens: 32,
+      }),
+    ]);
+    await firstStore.close();
+    removeOpenStore(firstStore);
+
+    const resumedStore = await openStore(databasePath);
+
+    await expect(resumedStore.messages('session-a')).resolves.toEqual([
+      { role: 'user', content: '解释这个问题' },
+      {
+        role: 'assistant',
+        content: '这是回答',
+        reasoning: '先分析边界条件',
+        usage: { inputTokens: 12, outputTokens: 20, reasoningTokens: 8, totalTokens: 32 },
+      },
     ]);
   });
 });

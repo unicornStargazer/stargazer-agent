@@ -39,4 +39,26 @@ describe('AgentProfileMenu', () => {
     await wrapper.get('.profile-trigger').trigger('click');
     expect(wrapper.find('.profile-popover').exists()).toBe(false);
   });
+
+  it('selects another configured model from the menu', async () => {
+    const wrapper = mount(AgentProfileMenu, {
+      props: {
+        profiles: [
+          { id: 'fast', name: '快速回答', model: 'gpt-4.1-mini' },
+          { id: 'reasoning', name: '深度分析', model: 'o3' },
+        ],
+        selectedProfileId: 'fast',
+        state: 'ready',
+        error: undefined,
+        disabled: false,
+      },
+    });
+
+    expect(wrapper.get('.profile-trigger').text()).toContain('gpt-4.1-mini');
+    await wrapper.get('.profile-trigger').trigger('click');
+    await wrapper.get('[role="menuitemradio"]:last-child').trigger('click');
+
+    expect(wrapper.emitted('select')).toEqual([['reasoning']]);
+    expect(wrapper.find('.profile-popover').exists()).toBe(false);
+  });
 });

@@ -92,12 +92,8 @@ export class ProfileAgent {
     const boundProfileId = await this.conversationStore.profileId(sessionId);
     const selectedProfileId = requestedProfileId ?? boundProfileId ?? this.defaultProfileId;
 
-    if (boundProfileId !== undefined && boundProfileId !== selectedProfileId) {
-      throw new ConversationProfileConflictError();
-    }
-
     const profile = this.requireProfile(selectedProfileId);
-    if (boundProfileId === undefined) {
+    if (boundProfileId !== profile.id) {
       await this.conversationStore.bindProfile(sessionId, profile.id);
     }
     return profile;

@@ -1,0 +1,31 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3000
+  },
+  "storage": {
+    "databasePath": "data/stargazer-agent.sqlite"
+  },
+  "provider": {
+    "apiKey": "替换为你的 API Key",
+    "baseUrl": "https://api.openai.com/v1",
+    "includeStreamUsage": true
+  },
+  "agents": {
+    "defaultProfileId": "fast",
+    "profiles": [
+      {
+        "id": "fast",
+        "name": "快速回答",
+        "model": "gpt-4.1-mini",
+        "historyLimit": 12
+      },
+      {
+        "id": "reasoning",
+        "name": "深度分析",
+        "model": "o3",
+        "historyLimit": 24
+      }
+    ]
+  }
+}

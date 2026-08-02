@@ -207,7 +207,9 @@ function isConversationMessage(value: unknown): value is ApiConversationMessage 
   return (
     isRecord(value) &&
     (value.role === 'user' || value.role === 'assistant') &&
-    typeof value.content === 'string'
+    typeof value.content === 'string' &&
+    (value.reasoning === undefined || typeof value.reasoning === 'string') &&
+    (value.usage === undefined || isTokenUsage(value.usage))
   );
 }
 
