@@ -109,7 +109,6 @@ function parseAgentProfile(value: unknown): AgentProfile {
   ) {
     throw new Error('Agent Profile historyLimit 必须是大于零的整数');
   }
-
   return {
     id: requireIdentifier(profile.id, 'Agent Profile id'),
     name: requireText(profile.name, 'Agent Profile name'),

@@ -82,8 +82,6 @@ examples/skills/
 ```md
 ---
 name: Order Support
-model: gpt-4.1-mini
-historyLimit: 16
 ---
 
 You are an order support assistant.

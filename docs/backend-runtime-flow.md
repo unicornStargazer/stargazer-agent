@@ -52,7 +52,7 @@ Node API: http://127.0.0.1:3000
 
 - `src/server.ts`: `main()`，负责运行时装配与 Fastify 启动
 - `src/http/app.ts`: `createHttpApp()`，负责 HTTP 路由、SSE 和静态资源适配
-- `src/skills/skill-profile-loader.ts`: `loadSkillProfiles()`
+- `src/skills/skill-loader.ts`: `loadAgentSkills()`，加载全局业务 Skill Catalog
 - `src/memory/sqlite-conversation-store.ts`: `SqliteConversationStore.open()`
 
 ## 3. 前端发起请求
@@ -87,7 +87,7 @@ Node API: http://127.0.0.1:3000
 | 路径               | 方法     | 用途                             |
 | ------------------ | -------- | -------------------------------- |
 | `/api/status`      | `GET`    | 查询服务状态、模型和默认 Profile |
-| `/api/profiles`    | `GET`    | 查询可选 Profile 和 Skill        |
+| `/api/profiles`    | `GET`    | 查询可选模型 Profile             |
 | `/api/history`     | `GET`    | 读取服务端会话历史               |
 | `/api/history`     | `DELETE` | 删除服务端会话                   |
 | `/api/chat`        | `POST`   | 非流式问答                       |

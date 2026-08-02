@@ -222,6 +222,8 @@ docs/*
 !docs/backend-runtime-flow.md
 !docs/configuration.md
 !docs/model-switching.md
+!docs/skills.md
+!docs/tools.md
 # .idea/
 
 # Node.js

@@ -2,10 +2,21 @@ import { describe, expect, it } from 'vitest';
 
 import { ChatAgent } from '../../src/chat/agent.js';
 import type { ChatMessage, ChatModel, ToolCallingCompletion } from '../../src/chat/index.js';
-import { ToolRegistry } from '../../src/tools/index.js';
+import { echoTextTool, ToolRegistry } from '../../src/tools/index.js';
 import type { ToolDefinition } from '../../src/tools/index.js';
 
 describe('ToolRegistry', () => {
+  it('returns a stable validation result for the echo_text example tool', async () => {
+    const registry = new ToolRegistry([echoTextTool]);
+
+    await expect(
+      registry.execute('echo_text', '{"text":"tool connection verified"}', { sessionId: 'session-1' }),
+    ).resolves.toBe('{"text":"tool connection verified"}');
+    await expect(registry.execute('echo_text', '{"text":"  "}', { sessionId: 'session-1' })).resolves.toBe(
+      'echo_text text must not be empty.',
+    );
+  });
+
   it('only executes explicitly registered tools and converts invalid arguments to a model-visible result', async () => {
     const registry = new ToolRegistry([
       {
