@@ -1,0 +1,23 @@
+{
+  "skillsDirectory": "backend/skills",
+  "server": {"host": "127.0.0.1", "port": 3001},
+  "storage": {"databasePath": "backend/data/development.sqlite"},
+  "provider": {
+    "apiKey": "replace-with-local-key",
+    "baseUrl": "https://api.openai.com/v1",
+    "includeStreamUsage": true
+  },
+  "agents": {
+    "defaultProfileId": "default",
+    "profiles": [{"id": "default", "name": "默认模型", "model": "configure-your-model", "historyLimit": 12}]
+  },
+  "runtime": {
+    "maxModelCalls": 12,
+    "maxToolExecutions": 24,
+    "maxActivatedSkills": 4,
+    "maxResourceReads": 8,
+    "maxResourceCharacters": 16000,
+    "maxDisclosureCharacters": 64000,
+    "maxContextCharacters": 128000
+  }
+}

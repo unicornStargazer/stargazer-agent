@@ -1,0 +1,32 @@
+"""稳定错误码与公开响应；这里只定义契约，具体异常映射在路由接入阶段实现。"""
+
+from enum import StrEnum
+
+from dokkan_agent.interfaces.http.schemas import HttpModel
+
+
+class ErrorCode(StrEnum):
+    INVALID_REQUEST = "INVALID_REQUEST"
+    REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
+    UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE"
+    REQUEST_CONFLICT = "REQUEST_CONFLICT"
+    SESSION_BUSY = "SESSION_BUSY"
+    UNKNOWN_PROFILE = "UNKNOWN_PROFILE"
+    CONVERSATION_STORAGE_UNAVAILABLE = "CONVERSATION_STORAGE_UNAVAILABLE"
+    MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+    STREAMING_UNAVAILABLE = "STREAMING_UNAVAILABLE"
+    MODEL_CAPABILITY_UNSUPPORTED = "MODEL_CAPABILITY_UNSUPPORTED"
+    AGENT_BUDGET_EXCEEDED = "AGENT_BUDGET_EXCEEDED"
+    SKILL_UNAVAILABLE = "SKILL_UNAVAILABLE"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class ErrorDetail(HttpModel):
+    """面向客户端的安全错误；message 不得使用上游响应或异常原文。"""
+
+    code: ErrorCode
+    message: str
+
+
+class ErrorResponse(HttpModel):
+    error: ErrorDetail

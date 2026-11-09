@@ -1,0 +1,12 @@
+event: reasoning
+data: {"content":"公开推理摘要"}
+
+event: chunk
+data: {"content":"第一行\n第二行"}
+
+event: usage
+data: {"usage":{"inputTokens":3,"outputTokens":6,"totalTokens":9}}
+
+event: done
+data: {}
+

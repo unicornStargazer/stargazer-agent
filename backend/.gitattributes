@@ -1,0 +1,2 @@
+# SSE 帧以空行结束；确定性协议样例必须保留文件末尾的帧分隔符。
+docs/examples/*.sse whitespace=-blank-at-eof
