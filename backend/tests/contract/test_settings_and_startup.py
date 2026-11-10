@@ -30,7 +30,7 @@ def test_paths_are_rooted_at_project_not_cwd(
     monkeypatch.chdir(child)
     loaded = load_settings(tmp_path, path)
     assert loaded.database_path == tmp_path / "backend/data/development.sqlite"
-    assert loaded.skills_directory == tmp_path / "backend/skills"
+    assert loaded.skills_directory == tmp_path / "backend/examples/skills"
     assert loaded.settings.runtime.max_model_calls == 12
     assert loaded.settings.agents.profiles[0].history_limit == 12
     assert not loaded.database_path.exists()
@@ -66,22 +66,24 @@ def test_cross_field_and_runtime_rules(
         load_settings(tmp_path, path)
 
 
-async def test_startup_has_liveness_but_does_not_claim_chat_readiness(
+async def test_startup_migrates_only_explicit_temp_database_without_model_request(
     tmp_path: Path, configuration: dict[str, Any]
 ) -> None:
+    configuration.pop("skillsDirectory")
     path = write_configuration(tmp_path, configuration)
     app = create_app(path, tmp_path)
+    assert not (tmp_path / "backend/data").exists()
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health/live")
             assert response.json() == {"alive": True}
             response = await client.get("/health/ready")
-            assert response.status_code == 503
-            assert response.json()["ready"] is False
-            assert (await client.get("/api/status")).status_code == 404
+            assert response.status_code == 200
+            assert response.json()["ready"] is True
+            assert (await client.get("/api/status")).json()["conversationStorage"] == "sqlite"
             assert "apiKey" not in (await client.get("/openapi.json")).text
     assert app.state.started is False
-    assert not (tmp_path / "backend/data").exists()
+    assert (tmp_path / "backend/data/development.sqlite").is_file()
 
 
 def test_malformed_or_missing_configuration_is_sanitized(tmp_path: Path) -> None:

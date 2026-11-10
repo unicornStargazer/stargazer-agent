@@ -18,6 +18,7 @@ class RunProfile:
     model: str
     system_prompt: str | None = None
     history_limit: int | None = None
+    supports_tools: bool = True  # 文件声明的工具能力；关闭时明确报错，不绕过 Skill 流程。
 
     def __post_init__(self) -> None:
         if self.history_limit is not None and self.history_limit < 1:

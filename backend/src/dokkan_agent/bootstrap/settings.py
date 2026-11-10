@@ -43,7 +43,7 @@ class ServerSettings(FileSettings):
 
 
 class StorageSettings(FileSettings):
-    """databasePath 为文件路径；本阶段启动不会连接或迁移它。"""
+    """databasePath 为文件路径；只在启动生命周期中打开和迁移。"""
 
     database_path: NonEmptyText
 
@@ -54,6 +54,9 @@ class ProviderSettings(FileSettings):
     api_key: SecretStr = Field(repr=False)
     base_url: NonEmptyText
     include_stream_usage: bool
+    connect_timeout_seconds: Annotated[int, Field(ge=1, le=120)] = 10
+    read_timeout_seconds: Annotated[int, Field(ge=1, le=600)] = 60
+    max_attempts: Annotated[int, Field(ge=1, le=3)] = 2
 
     @field_validator("api_key")
     @classmethod
@@ -81,6 +84,7 @@ class ProfileSettings(FileSettings):
     model: NonEmptyText
     system_prompt: NonEmptyText | None = None
     history_limit: PositiveSafeInt | None = None
+    supports_tools: bool = True
 
     @field_validator("history_limit", "system_prompt", mode="before")
     @classmethod

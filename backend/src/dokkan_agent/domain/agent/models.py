@@ -22,8 +22,10 @@ class TokenUsage:
             self.reasoning_tokens,
             self.total_tokens,
         ):
-            if value is not None and (type(value) is not int or value < 0):
-                raise ValueError("Token 用量必须是非负整数或未知")
+            if value is not None and (
+                type(value) is not int or not 0 <= value <= 9_007_199_254_740_991
+            ):
+                raise ValueError("Token 用量必须是非负安全整数或未知")
 
 
 class MessageRole(StrEnum):

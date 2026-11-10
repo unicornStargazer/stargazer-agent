@@ -16,6 +16,7 @@ from dokkan_agent.application.runtime.models import (
 )
 from dokkan_agent.application.tool.registry import ToolRegistry
 from dokkan_agent.domain.agent.budget import RunBudget, RunLimits
+from dokkan_agent.domain.agent.errors import ModelCapabilityError
 from dokkan_agent.domain.agent.models import (
     MessageRole,
     ModelMessage,
@@ -44,6 +45,8 @@ class AgentRunner:
     ) -> AsyncGenerator[RunEvent, None]:
         """每轮独立上下文；调用方关闭/取消事件流会关闭当前上游生成器。"""
         limits = limits or RunLimits()
+        if self._tools.definitions() and not request.profile.supports_tools:
+            raise ModelCapabilityError("所选模型未启用工具能力。")
         context = RunContext(RunBudget(limits))
         messages = await self._builder.build(request, context)
         aggregate = RunAggregation(limits.max_context_characters)

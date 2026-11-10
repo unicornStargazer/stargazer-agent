@@ -39,7 +39,10 @@ class RunAggregation:
                 and all(item is not None for item in snapshots)
                 else None
             )
-        return TokenUsage(**totals)
+        try:
+            return TokenUsage(**totals)
+        except ValueError:
+            raise ModelProtocolError("模型用量汇总超出可表示范围。") from None
 
     def reply(self) -> AssistantReply:
         content = "".join(self.contents)

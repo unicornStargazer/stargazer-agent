@@ -1,21 +1,21 @@
 # Agent 内核运行流程
 
-T03—T05 提供可独立运行的单 Agent 内核。正式 HTTP 入口仍停留在启动骨架；真实 Model Provider、ConversationService、SQLite 仓储在 T06—T08 接入。这个阶段不需要 Dokkan 数据服务。
+T03—T05 提供独立单 Agent 内核；T06—T08 已接入 HTTP、OpenAI 兼容 Provider、ConversationService 和 SQLite。完整入口见 [HTTP 运行流程](http-runtime.md)，不需要 Dokkan 数据服务。
 
 ## 主要入口和职责
 
-| 入口 | 负责的内容 |
-| --- | --- |
-| `bootstrap/runtime.py::create_agent_runner` | 注入 ModelGateway 和 SkillCatalog，静态注册两个 Skill 工具 |
-| `application/runtime/context_builder.py::ContextBuilder.build` | 基础提示、L1、完整历史、本轮用户消息及显式 Skill 激活 |
-| `application/runtime/runner.py::AgentRunner.stream` | 驱动模型与工具循环，透传展示事件，成功时返回 RunFinished |
-| `application/runtime/model_call.py::ModelCallCollector` | 完整性、结束原因、调用 ID、待执行工具数检查 |
-| `application/runtime/aggregation.py::RunAggregation` | 汇总所有可见正文、公开推理和 Provider 用量 |
-| `application/skill/service.py::SkillService` | 本轮激活、资源读取、去重与数量限制 |
-| `application/tool/registry.py::ToolRegistry.execute` | JSON 和 Schema 校验、静态分发、输出验证、披露预算 |
-| `infrastructure/skill/filesystem_catalog.py::FilesystemSkillCatalog.discover` | 显式目录发现、元数据和文件快照；不执行脚本 |
+| 入口                                                                          | 负责的内容                                                 |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `bootstrap/runtime.py::create_agent_runner`                                   | 注入 ModelGateway 和 SkillCatalog，静态注册两个 Skill 工具 |
+| `application/runtime/context_builder.py::ContextBuilder.build`                | 基础提示、L1、完整历史、本轮用户消息及显式 Skill 激活      |
+| `application/runtime/runner.py::AgentRunner.stream`                           | 驱动模型与工具循环，透传展示事件，成功时返回 RunFinished   |
+| `application/runtime/model_call.py::ModelCallCollector`                       | 完整性、结束原因、调用 ID、待执行工具数检查                |
+| `application/runtime/aggregation.py::RunAggregation`                          | 汇总所有可见正文、公开推理和 Provider 用量                 |
+| `application/skill/service.py::SkillService`                                  | 本轮激活、资源读取、去重与数量限制                         |
+| `application/tool/registry.py::ToolRegistry.execute`                          | JSON 和 Schema 校验、静态分发、输出验证、披露预算          |
+| `infrastructure/skill/filesystem_catalog.py::FilesystemSkillCatalog.discover` | 显式目录发现、元数据和文件快照；不执行脚本                 |
 
-Runner 的输入包含本次 Profile 和完整历史轮次，不在内部解析配置或选择模型。这样同一 session 使用另一个模型时，历史和 Catalog 都可以继续复用。ConversationService 后续负责锁、去重和提交；Runner 不读写会话库，RunFinished 也不是 HTTP done。
+Runner 的输入包含本次 Profile 和完整历史轮次，不在内部解析配置或选择模型。这样同一 session 使用另一个模型时，历史和 Catalog 都可以继续复用。ConversationService 负责锁、去重和提交；Runner 不读写会话库，RunFinished 也不是 HTTP done。
 
 ```mermaid
 flowchart TD
@@ -37,11 +37,11 @@ flowchart TD
 
 格式依据 [Agent Skills specification](https://agentskills.io/specification)。开发辅助 `.codex/skills`、用户 Skill 主目录都不会自动成为本产品的业务目录。
 
-| 层级 | 进入模型的内容 | 进入时间 |
-| --- | --- | --- |
-| L1 | Skill name、description | 每条消息的首次模型请求 |
-| L2 | 选中 Skill 正文、版本、资源清单 | `activate_skill(name)` 成功，或用户明确 `$skill-name` |
-| L3 | 已激活 Skill 的单个 UTF-8 文本 | `read_skill_resource(name, relative_path)` 成功 |
+| 层级 | 进入模型的内容                  | 进入时间                                              |
+| ---- | ------------------------------- | ----------------------------------------------------- |
+| L1   | Skill name、description         | 每条消息的首次模型请求                                |
+| L2   | 选中 Skill 正文、版本、资源清单 | `activate_skill(name)` 成功，或用户明确 `$skill-name` |
+| L3   | 已激活 Skill 的单个 UTF-8 文本  | `read_skill_resource(name, relative_path)` 成功       |
 
 磁盘发现为了构建版本快照会读取文件并计算哈希；“未加载”指正文未进入模型上下文，不代表磁盘没有读取。Catalog 不缓存全部 Skill 正文。每次披露核对快照和实际路径，变化时返回 SKILL_CHANGED，重启后重新发现，避免混用目录摘要和新正文。
 
@@ -69,7 +69,7 @@ allowed-tools 只保留并记录兼容性提示，不控制工具权限，不创
 
 JSON 参数必须完整，禁止重复键、非有限数值，最多 32000 字符。参数无效返回 INVALID_ARGUMENTS，未知工具返回 UNKNOWN_TOOL；处理器异常和无效输出返回 EXECUTION_FAILED，原始异常不交给模型。预算耗尽直接结束运行，不能成为可无限修正的普通 Tool 错误。
 
-工具执行前必须等 ModelCompleted 并确认整次流正常结束。工具调用 ID 本轮不能重复，一个批次顺序执行，允许同批先激活再读取资源。Provider 的 JSON 片段归并属于 T07；Runner 只接受完整的 ToolCallReady。
+工具执行前必须等 ModelCompleted 并确认整次流正常结束。工具调用 ID 本轮不能重复，一个批次顺序执行，允许同批先激活再读取资源。T07 Provider 已实现 JSON 片段归并；Runner 只接受完整的 ToolCallReady。
 
 Dokkan 的 KnowledgeGateway 只定义候选查找与按需字段/章节读取，没有实现 HTTP Adapter，没有注册虚假的 Wiki 工具。以后取得真实服务协议再接入，当前不猜接口或鉴权。
 
@@ -77,21 +77,21 @@ Dokkan 的 KnowledgeGateway 只定义候选查找与按需字段/章节读取，
 
 配置仍来自 JSON runtime，默认值：
 
-| 项 | 上限 |
-| --- | --- |
-| 模型调用 | 12 次 |
-| 工具执行 | 24 次，含未知/无效/重复请求及显式激活 |
-| 唯一 Skill 激活 | 4 个 |
-| 资源读取 | 8 次，含重复及失败读取 |
-| 单份资源正文 | 16000 Unicode 字符；超限不返回半段 |
-| 累计工具/指令披露 | 64000 字符，按实际 JSON 结果计数 |
+| 项                       | 上限                                        |
+| ------------------------ | ------------------------------------------- |
+| 模型调用                 | 12 次                                       |
+| 工具执行                 | 24 次，含未知/无效/重复请求及显式激活       |
+| 唯一 Skill 激活          | 4 个                                        |
+| 资源读取                 | 8 次，含重复及失败读取                      |
+| 单份资源正文             | 16000 Unicode 字符；超限不返回半段          |
+| 累计工具/指令披露        | 64000 字符，按实际 JSON 结果计数            |
 | 模型上下文及整轮展示输出 | 各 128000 字符，配置项 maxContextCharacters |
 
 上下文计数含消息、工具参数和 Schema 的 JSON 开销，是字符上限而非精确 Token 估算。历史窗口仍按消息条数，选择预算内最近的完整轮次；3 条最多带入 1 轮，不能带入半轮。原历史的 reasoning/usage 不作为模型提示注入。
 
 同一次模型请求的多份累计 usage 取最后有效值；多个模型请求再求和。任一次调用缺少某项统计，则整轮该项未知；reasoningTokens 是子项，不额外计入 totalTokens。所有已展示的中间正文都进入成功回复，不只保存最后一次调用文字。公开 reasoning 独立汇总，不能编造隐藏思考过程。
 
-调用方取消或关闭异步事件流时，会关闭正在进行的上游生成器。模型未正常结束、结束后又发事件、ID 重复或预算耗尽都不会产生 RunFinished。完整超时/重试与持久化失败处理留给 Provider 和 ConversationService。
+调用方取消或关闭异步事件流时，会关闭正在进行的上游生成器。模型未正常结束、结束后又发事件、ID 重复或预算耗尽都不会产生 RunFinished。Provider 负责有界流解码和有限重试，ConversationService 负责幂等、短事务、失败与中断状态。
 
 ## 无密钥演示与验证
 
