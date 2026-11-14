@@ -48,7 +48,13 @@ class ToolResult:
     error: ToolFailure | None = None
 
     def __post_init__(self) -> None:
-        if not self.call_id.strip() or not self.name.strip():
+        raw_call_id = self.call_id
+        call_id = raw_call_id.strip()
+        if not call_id:
+            raise ValueError("工具调用 ID 和名称不能为空")
+        raw_name = self.name
+        name = raw_name.strip()
+        if not name:
             raise ValueError("工具调用 ID 和名称不能为空")
         if (self.payload is None) == (self.error is None):
             raise ValueError("工具结果必须提供非 null payload 或 error，且不能同时提供")

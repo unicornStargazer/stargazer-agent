@@ -8,10 +8,15 @@ class ProfileCatalog:
     def __init__(self, profiles: tuple[RunProfile, ...], default_id: str) -> None:
         self.profiles = profiles
         self._by_id = {profile.id: profile for profile in profiles}
-        self.default = self.select(default_id)
+        default = self.select(default_id)
+        self.default = default
 
     def select(self, profile_id: str | None) -> RunProfile:
-        profile = self._by_id.get(profile_id) if profile_id else self.default
+        if profile_id:
+            profiles = self._by_id
+            profile = profiles.get(profile_id)
+        else:
+            profile = self.default
         if profile is None:
             raise UnknownProfileError("模型配置不存在，请重新选择。")
         return profile

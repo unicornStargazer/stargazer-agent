@@ -20,7 +20,8 @@ class SecurityHeadersMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                MutableHeaders(scope=message).update(SECURITY_HEADERS)
+                headers = MutableHeaders(scope=message)
+                headers.update(SECURITY_HEADERS)
             await send(message)
 
         await self._app(scope, receive, send_with_headers)

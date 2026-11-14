@@ -30,21 +30,28 @@ def serialize_tool_result(result: ToolResult) -> str:
         payload["error"] = {"code": result.error.code.value, "message": result.error.message}
     else:
         payload["result"] = result.payload
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return encoded
 
 
 class ToolRegistry:
     def __init__(self, tools: Sequence[ExecutableTool]) -> None:
         self._tools = {tool.definition.name: tool for tool in tools}
-        if len(self._tools) != len(tools):
+        registered_count = len(self._tools)
+        provided_count = len(tools)
+        if registered_count != provided_count:
             raise ValueError("工具名称不能重复注册")
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(tool.definition for tool in self._tools.values())
+        tools = self._tools
+        registered = tools.values()
+        definitions = tuple(tool.definition for tool in registered)
+        return definitions
 
     async def execute(self, call: ToolCall, context: RunContext) -> ToolResult:
         """所有调用都消耗次数；可恢复失败交给模型纠正，预算耗尽则直接终止。"""
-        context.budget.consume_tool_execution()
+        budget = context.budget
+        budget.consume_tool_execution()
         result = await self._execute_registered(call, context)
         try:
             encoded = serialize_tool_result(result)
@@ -52,45 +59,51 @@ class ToolRegistry:
             result = self._failure(call, ToolErrorCode.EXECUTION_FAILED, "工具输出格式无效。")
             encoded = serialize_tool_result(result)
         # 显式激活也经此入口，统一按实际披露的完整 JSON 计费，避免漏算或重复计费。
-        context.budget.consume_disclosure(len(encoded))
+        characters = len(encoded)
+        budget.consume_disclosure(characters)
         return result
 
     async def _execute_registered(self, call: ToolCall, context: RunContext) -> ToolResult:
-        tool = self._tools.get(call.name)
+        tools = self._tools
+        tool = tools.get(call.name)
         if tool is None:
-            return self._failure(call, ToolErrorCode.UNKNOWN_TOOL, "工具未注册。")
+            result = self._failure(call, ToolErrorCode.UNKNOWN_TOOL, "工具未注册。")
+            return result
         try:
             arguments = _parse_arguments(call.arguments)
             output = await tool.execute(arguments, context)
-            return ToolResult(call.id, call.name, payload=output)
+            result = ToolResult(call.id, call.name, payload=output)
+            return result
         except (ValidationError, ValueError, RecursionError):
-            return self._failure(call, ToolErrorCode.INVALID_ARGUMENTS, "工具参数不符合声明格式。")
+            result = self._failure(call, ToolErrorCode.INVALID_ARGUMENTS, "工具参数不符合声明格式。")
+            return result
         except SkillAccessError as error:
-            return self._failure(call, error.code, str(error))
+            message = str(error)
+            result = self._failure(call, error.code, message)
+            return result
         except BudgetExceeded:
             raise
         except Exception:
-            return self._failure(
-                call, ToolErrorCode.EXECUTION_FAILED, "工具执行失败，请检查服务端实现。"
-            )
+            result = self._failure(call, ToolErrorCode.EXECUTION_FAILED, "工具执行失败，请检查服务端实现。")
+            return result
 
     @staticmethod
     def _failure(call: ToolCall, code: ToolErrorCode, message: str) -> ToolResult:
-        return ToolResult(call.id, call.name, error=ToolFailure(code, message))
+        failure = ToolFailure(code, message)
+        result = ToolResult(call.id, call.name, error=failure)
+        return result
 
 
 def _parse_arguments(raw: str) -> dict[str, JsonValue]:
-    if len(raw) > MAX_ARGUMENT_CHARACTERS:
+    characters = len(raw)
+    if characters > MAX_ARGUMENT_CHARACTERS:
         raise ValueError("工具参数过长")
-    payload: object = json.loads(
-        raw,
-        object_pairs_hook=_unique_pairs,
-        parse_constant=_reject_constant,
-        parse_float=_parse_finite_float,
-    )
-    if not isinstance(payload, dict):
+    payload: object = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_reject_constant, parse_float=_parse_finite_float)
+    is_object = isinstance(payload, dict)
+    if not is_object:
         raise ValueError("工具参数必须为 JSON 对象")
-    return cast(dict[str, JsonValue], payload)
+    arguments = cast(dict[str, JsonValue], payload)
+    return arguments
 
 
 def _unique_pairs(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
@@ -108,6 +121,7 @@ def _reject_constant(value: str) -> None:
 
 def _parse_finite_float(value: str) -> float:
     number = float(value)
-    if not math.isfinite(number):
+    finite = math.isfinite(number)
+    if not finite:
         raise ValueError("JSON 参数不能包含溢出数值")
     return number

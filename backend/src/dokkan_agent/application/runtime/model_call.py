@@ -33,26 +33,26 @@ class ModelCallCollector:
     def accept(self, event: ModelEvent) -> ContentDelta | ReasoningDelta | UsageReported | None:
         if self.completed:
             raise ModelProtocolError("模型在结束标记后继续发送事件。")
+        aggregate = self.aggregate
+        contents = self.contents
         match event:
             case ContentDelta(content):
-                self.aggregate.append_text(content)
-                self.contents.append(content)
+                aggregate.append_text(content)
+                contents.append(content)
                 return event
             case ReasoningDelta(content):
-                self.aggregate.append_text(content, reasoning=True)
+                aggregate.append_text(content, reasoning=True)
                 return event
             case UsageReported(usage):
-                if any(
-                    value is not None
-                    for value in (
-                        usage.input_tokens,
-                        usage.output_tokens,
-                        usage.reasoning_tokens,
-                        usage.total_tokens,
-                    )
-                ):
+                values = (usage.input_tokens, usage.output_tokens, usage.reasoning_tokens, usage.total_tokens)
+                has_usage = any(value is not None for value in values)
+                if has_usage:
                     self.usage = usage
-                    return UsageReported(self.aggregate.usage(usage) or TokenUsage())
+                    total = aggregate.usage(usage)
+                    if not total:
+                        total = TokenUsage()
+                    reported = UsageReported(total)
+                    return reported
             case ToolCallReady(call):
                 self._collect_tool_call(call)
             case ModelCompleted(reason):
@@ -65,12 +65,21 @@ class ModelCallCollector:
         return None
 
     def _collect_tool_call(self, call: ToolCall) -> None:
-        if not call.id.strip() or not call.name.strip() or call.id in self.used_call_ids:
+        call_id = call.id
+        identifier = call_id.strip()
+        if not identifier:
+            raise ModelProtocolError("模型工具调用 ID/名称缺失或 ID 重复。")
+        name = call.name
+        tool_name = name.strip()
+        used_call_ids = self.used_call_ids
+        if not tool_name or call.id in used_call_ids:
             raise ModelProtocolError("模型工具调用 ID/名称缺失或 ID 重复。")
         remaining = (
             self.context.budget.limits.max_tool_executions - self.context.budget.tool_executions
         )
-        if len(self.calls) >= remaining:
+        calls = self.calls
+        count = len(calls)
+        if count >= remaining:
             raise BudgetExceeded("模型请求的工具数超过本轮剩余预算。")
-        self.used_call_ids.add(call.id)
-        self.calls.append(call)
+        used_call_ids.add(call.id)
+        calls.append(call)

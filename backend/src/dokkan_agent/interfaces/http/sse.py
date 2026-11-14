@@ -37,4 +37,6 @@ type SseEvent = ChunkEvent | ReasoningEvent | UsageEvent | DoneEvent | ErrorEven
 def encode_event(event: SseEvent) -> bytes:
     """JSON 转义正文中的换行，防止文字被误识别为新的 SSE 事件。"""
     payload = event.model_dump_json(by_alias=True, exclude_none=True)
-    return f"event: {event.event_name}\ndata: {payload}\n\n".encode()
+    frame = f"event: {event.event_name}\ndata: {payload}\n\n"
+    encoded = frame.encode()
+    return encoded

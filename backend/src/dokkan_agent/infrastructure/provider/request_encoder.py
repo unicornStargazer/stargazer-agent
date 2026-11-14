@@ -6,10 +6,14 @@ from dokkan_agent.domain.agent.models import ModelMessage, ModelRequest
 
 
 def encode_request(request: ModelRequest, include_usage: bool) -> dict[str, Any]:
+    messages = []
+    for message in request.messages:
+        encoded = _encode_message(message)
+        messages.append(encoded)
     payload: dict[str, Any] = {
         "model": request.model,
         "stream": True,
-        "messages": [_encode_message(message) for message in request.messages],
+        "messages": messages,
     }
     if include_usage:
         payload["stream_options"] = {"include_usage": True}

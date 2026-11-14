@@ -20,12 +20,8 @@ def create_echo_tool() -> ExecutableTool:
     """返回有输入/输出校验的示例；不发网络请求，不读写任何文件。"""
 
     async def echo(parameters: EchoParameters, context: RunContext) -> EchoOutput:
-        return EchoOutput(text=parameters.text)
+        output = EchoOutput(text=parameters.text)
+        return output
 
-    return FunctionTool(
-        name="echo_text",
-        description="调试示例：原样返回有界文本。",
-        parameters=EchoParameters,
-        output=EchoOutput,
-        handler=echo,
-    )
+    tool = FunctionTool(name="echo_text", description="调试示例：原样返回有界文本。", parameters=EchoParameters, output=EchoOutput, handler=echo)
+    return tool

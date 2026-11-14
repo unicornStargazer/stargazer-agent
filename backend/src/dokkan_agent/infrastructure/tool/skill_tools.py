@@ -44,48 +44,22 @@ class ResourceOutput(BaseModel):
 def create_skill_tools(service: SkillService) -> tuple[ExecutableTool, ...]:
     """静态创建两个工具；没有 Skill 声明可以扩充这个集合。"""
 
-    async def activate(
-        parameters: ActivateSkillParameters, context: RunContext
-    ) -> ActivationOutput:
+    async def activate(parameters: ActivateSkillParameters, context: RunContext) -> ActivationOutput:
         activated = await service.activate(parameters.name, context)
-        return ActivationOutput(
-            name=activated.descriptor.name,
-            version=activated.version,
-            already_active=activated.already_active,
-            instructions=None if activated.already_active else activated.instructions,
-            resources=None
-            if activated.already_active
-            else [
-                ResourceInfo(relative_path=item.relative_path, version=item.version, kind=item.kind)
-                for item in activated.resources
-            ],
-        )
+        resources = None
+        if not activated.already_active:
+            resources = []
+            for item in activated.resources:
+                resource = ResourceInfo(relative_path=item.relative_path, version=item.version, kind=item.kind)
+                resources.append(resource)
+        output = ActivationOutput(name=activated.descriptor.name, version=activated.version, already_active=activated.already_active, instructions=None if activated.already_active else activated.instructions, resources=resources)
+        return output
 
-    async def read_resource(
-        parameters: ReadResourceParameters, context: RunContext
-    ) -> ResourceOutput:
+    async def read_resource(parameters: ReadResourceParameters, context: RunContext) -> ResourceOutput:
         loaded = await service.read_resource(parameters.name, parameters.relative_path, context)
-        return ResourceOutput(
-            name=loaded.skill_name,
-            relative_path=loaded.resource.relative_path,
-            version=loaded.resource.version,
-            already_loaded=loaded.already_loaded,
-            content=None if loaded.already_loaded else loaded.content,
-        )
+        output = ResourceOutput(name=loaded.skill_name, relative_path=loaded.resource.relative_path, version=loaded.resource.version, already_loaded=loaded.already_loaded, content=None if loaded.already_loaded else loaded.content)
+        return output
 
-    return (
-        FunctionTool(
-            name="activate_skill",
-            description="按任务激活目录中的 Skill，获取正文和资源清单。",
-            parameters=ActivateSkillParameters,
-            output=ActivationOutput,
-            handler=activate,
-        ),
-        FunctionTool(
-            name="read_skill_resource",
-            description="读取已激活 Skill 清单中的一个 UTF-8 文本资源。",
-            parameters=ReadResourceParameters,
-            output=ResourceOutput,
-            handler=read_resource,
-        ),
-    )
+    activation_tool = FunctionTool(name="activate_skill", description="按任务激活目录中的 Skill，获取正文和资源清单。", parameters=ActivateSkillParameters, output=ActivationOutput, handler=activate)
+    resource_tool = FunctionTool(name="read_skill_resource", description="读取已激活 Skill 清单中的一个 UTF-8 文本资源。", parameters=ReadResourceParameters, output=ResourceOutput, handler=read_resource)
+    return activation_tool, resource_tool

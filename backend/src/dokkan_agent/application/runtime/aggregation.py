@@ -19,33 +19,46 @@ class RunAggregation:
     visible_characters: int = 0
 
     def append_text(self, content: str, *, reasoning: bool = False) -> None:
-        if self.visible_characters + len(content) > self.maximum_characters:
+        characters = len(content)
+        if self.visible_characters + characters > self.maximum_characters:
             raise BudgetExceeded("本轮模型输出字符预算已耗尽。")
-        self.visible_characters += len(content)
-        (self.reasoning if reasoning else self.contents).append(content)
+        self.visible_characters += characters
+        target = self.reasoning if reasoning else self.contents
+        target.append(content)
 
     def usage(self, current: TokenUsage | None = None) -> TokenUsage | None:
         snapshots = self.usages + ([current] if current is not None else [])
-        if not any(item is not None for item in snapshots):
+        has_usage = any(item is not None for item in snapshots)
+        if not has_usage:
             return None
         totals: dict[str, int | None] = {}
         for name in ("input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
-            known = [getattr(item, name) for item in snapshots if item is not None]
+            known = []
+            for item in snapshots:
+                if item is not None:
+                    value = getattr(item, name)
+                    known.append(value)
             # 任一次调用缺失统计，则整轮该字段未知，不能展示不完整的部分和。
-            totals[name] = (
-                sum(known)
-                if known
-                and all(value is not None for value in known)
-                and all(item is not None for item in snapshots)
-                else None
-            )
+            total = None
+            if known:
+                fields_known = all(value is not None for value in known)
+                if fields_known:
+                    calls_known = all(item is not None for item in snapshots)
+                    if calls_known:
+                        total = sum(known)
+            totals[name] = total
         try:
-            return TokenUsage(**totals)
+            usage = TokenUsage(**totals)
+            return usage
         except ValueError:
             raise ModelProtocolError("模型用量汇总超出可表示范围。") from None
 
     def reply(self) -> AssistantReply:
         content = "".join(self.contents)
-        if not content.strip():
+        visible = content.strip()
+        if not visible:
             raise ModelProtocolError("模型未生成可见回答。")
-        return AssistantReply(content, "".join(self.reasoning) or None, self.usage())
+        reasoning = "".join(self.reasoning)
+        usage = self.usage()
+        reply = AssistantReply(content, reasoning or None, usage)
+        return reply

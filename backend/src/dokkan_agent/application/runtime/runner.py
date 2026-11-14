@@ -34,55 +34,65 @@ class AgentRunner:
 
     async def run(self, request: RunInput, limits: RunLimits | None = None) -> RunResult:
         """非流调用复用同一执行内核；成功返回结果但不落库。"""
-        async with aclosing(self.stream(request, limits)) as events:
+        stream = self.stream(request, limits)
+        closing = aclosing(stream)
+        async with closing as events:
             async for event in events:
-                if isinstance(event, RunFinished):
-                    return event.result
+                match event:
+                    case RunFinished():
+                        return event.result
         raise ModelProtocolError("Agent 未完成运行。")
 
-    async def stream(
-        self, request: RunInput, limits: RunLimits | None = None
-    ) -> AsyncGenerator[RunEvent, None]:
+    async def stream(self, request: RunInput, limits: RunLimits | None = None) -> AsyncGenerator[RunEvent, None]:
         """每轮独立上下文；调用方关闭/取消事件流会关闭当前上游生成器。"""
-        limits = limits or RunLimits()
-        if self._tools.definitions() and not request.profile.supports_tools:
+        if not limits:
+            limits = RunLimits()
+        tools = self._tools
+        definitions = tools.definitions()
+        if definitions and not request.profile.supports_tools:
             raise ModelCapabilityError("所选模型未启用工具能力。")
-        context = RunContext(RunBudget(limits))
-        messages = await self._builder.build(request, context)
+        budget = RunBudget(limits)
+        context = RunContext(budget)
+        builder = self._builder
+        messages = await builder.build(request, context)
         aggregate = RunAggregation(limits.max_context_characters)
         used_call_ids = {call.id for message in messages for call in message.tool_calls}
+        model = self._model
         while True:
-            self._builder.ensure_size(messages, context)
-            context.budget.consume_model_call()
+            builder.ensure_size(messages, context)
+            budget.consume_model_call()
             state = ModelCallCollector(context, aggregate, used_call_ids)
-            model_request = ModelRequest(
-                request.profile.model, tuple(messages), self._tools.definitions()
-            )
-            async with aclosing(self._model.stream(model_request)) as events:
+            model_messages = tuple(messages)
+            definitions = tools.definitions()
+            model_request = ModelRequest(request.profile.model, model_messages, definitions)
+            stream = model.stream(model_request)
+            closing = aclosing(stream)
+            async with closing as events:
                 async for event in events:
                     forwarded = state.accept(event)
                     if forwarded is not None:
                         yield forwarded
             if not state.completed:
                 raise ModelProtocolError("模型流未完整结束。")
-            aggregate.usages.append(state.usage)
+            usages = aggregate.usages
+            usages.append(state.usage)
             confirmed_usage = aggregate.usage()
             if state.usage is None and confirmed_usage is not None:
                 # 后续调用缺少统计时撤回不完整合计，不能让页面继续显示前几次的部分和。
-                yield UsageReported(confirmed_usage)
+                usage_event = UsageReported(confirmed_usage)
+                yield usage_event
             if not state.calls:
-                result = RunResult(
-                    aggregate.reply(),
-                    context.budget.model_calls,
-                    context.budget.tool_executions,
-                    tuple(context.activated_skills),
-                )
-                yield RunFinished(result)
+                reply = aggregate.reply()
+                activated_skills = tuple(context.activated_skills)
+                result = RunResult(reply, budget.model_calls, budget.tool_executions, activated_skills)
+                finished_event = RunFinished(result)
+                yield finished_event
                 return
-            messages.append(
-                ModelMessage(
-                    MessageRole.ASSISTANT, "".join(state.contents), tool_calls=tuple(state.calls)
-                )
-            )
+            contents = "".join(state.contents)
+            calls = tuple(state.calls)
+            assistant = ModelMessage(MessageRole.ASSISTANT, contents, tool_calls=calls)
+            messages.append(assistant)
             for call in state.calls:
-                messages.append(tool_result_message(await self._tools.execute(call, context)))
+                tool_result = await tools.execute(call, context)
+                message = tool_result_message(tool_result)
+                messages.append(message)

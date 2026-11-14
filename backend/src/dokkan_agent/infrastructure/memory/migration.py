@@ -20,16 +20,16 @@ class Migration:
     filename: str
 
 
-MIGRATIONS = (
-    Migration(1, "001_conversations.sql"),
-    Migration(2, "002_agent_requests.sql"),
-)
+CONVERSATIONS_MIGRATION = Migration(1, "001_conversations.sql")
+REQUESTS_MIGRATION = Migration(2, "002_agent_requests.sql")
+MIGRATIONS = (CONVERSATIONS_MIGRATION, REQUESTS_MIGRATION)
 
 
 async def migrate_database(database_path: Path) -> tuple[int, ...]:
     """原子升级指定文件，返回本次版本；失败全量回滚，取消向上传播并关闭连接。"""
     try:
-        async with aiosqlite.connect(database_path, isolation_level=None, timeout=5) as connection:
+        connection_context = aiosqlite.connect(database_path, isolation_level=None, timeout=5)
+        async with connection_context as connection:
             await connection.execute("PRAGMA foreign_keys = ON")
             await connection.execute("BEGIN IMMEDIATE")
             try:
@@ -45,70 +45,76 @@ async def migrate_database(database_path: Path) -> tuple[int, ...]:
 
 
 async def _apply_pending_migrations(connection: aiosqlite.Connection) -> tuple[int, ...]:
-    await connection.execute(
-        """CREATE TABLE IF NOT EXISTS agent_schema_migrations (
+    schema_sql = """CREATE TABLE IF NOT EXISTS agent_schema_migrations (
             version INTEGER PRIMARY KEY NOT NULL,
             applied_at_ms INTEGER NOT NULL
         )"""
-    )
-    async with connection.execute(
-        "SELECT version FROM agent_schema_migrations ORDER BY version"
-    ) as cursor:
-        versions = tuple(row[0] for row in await cursor.fetchall())
-    expected_prefix = tuple(migration.version for migration in MIGRATIONS[: len(versions)])
+    await connection.execute(schema_sql)
+    cursor_context = connection.execute("SELECT version FROM agent_schema_migrations ORDER BY version")
+    async with cursor_context as cursor:
+        rows = await cursor.fetchall()
+        versions = tuple(row[0] for row in rows)
+    version_count = len(versions)
+    expected_prefix = tuple(migration.version for migration in MIGRATIONS[:version_count])
     if versions != expected_prefix:
         raise MigrationError("迁移版本不连续或高于当前程序版本，拒绝修改数据库。")
 
     applied: list[int] = []
-    for migration in MIGRATIONS[len(versions) :]:
+    for migration in MIGRATIONS[version_count:]:
         await _execute_script(connection, migration.filename)
         if migration.version == 1:
             await _upgrade_legacy_columns(connection)
-        await connection.execute(
-            "INSERT INTO agent_schema_migrations(version, applied_at_ms) VALUES (?, ?)",
-            (migration.version, time.time_ns() // 1_000_000),
-        )
+        timestamp_ns = time.time_ns()
+        parameters = (migration.version, timestamp_ns // 1_000_000)
+        await connection.execute("INSERT INTO agent_schema_migrations(version, applied_at_ms) VALUES (?, ?)", parameters)
         applied.append(migration.version)
 
-    async with connection.execute("PRAGMA foreign_key_check") as cursor:
-        if await cursor.fetchone() is not None:
+    cursor_context = connection.execute("PRAGMA foreign_key_check")
+    async with cursor_context as cursor:
+        row = await cursor.fetchone()
+        if row is not None:
             raise MigrationError("旧库存在失效的会话关联，迁移已回滚。")
-    return tuple(applied)
+    applied_versions = tuple(applied)
+    return applied_versions
 
 
 async def _execute_script(connection: aiosqlite.Connection, filename: str) -> None:
-    resource = files("dokkan_agent.infrastructure.memory").joinpath("migrations", filename)
+    package = files("dokkan_agent.infrastructure.memory")
+    resource = package.joinpath("migrations", filename)
     script = resource.read_text(encoding="utf-8")
     # executescript 会隐式提交；逐条执行以保持 DDL、兼容补列、版本记录在同一事务。
-    for statement in _split_statements(script):
+    statements = _split_statements(script)
+    for statement in statements:
         await connection.execute(statement)
 
 
 def _split_statements(script: str) -> Iterator[str]:
     pending = ""
-    for line in script.splitlines(keepends=True):
+    lines = script.splitlines(keepends=True)
+    for line in lines:
         pending += line
-        if sqlite3.complete_statement(pending):
+        complete = sqlite3.complete_statement(pending)
+        if complete:
             yield pending
             pending = ""
-    if pending.strip():
+    remaining = pending.strip()
+    if remaining:
         raise MigrationError("内置迁移脚本包含不完整的 SQL 语句。")
 
 
 async def _upgrade_legacy_columns(connection: aiosqlite.Connection) -> None:
     """仅添加旧版本缺少的可空列；表名、列名和 DDL 都是服务端静态常量。"""
     # 同名残缺表不能被误记为已迁移，否则问题会延迟到首次用户请求才暴露。
-    await connection.execute(
-        "SELECT session_id, created_at_ms, updated_at_ms FROM conversation_sessions LIMIT 0"
-    )
-    await connection.execute(
-        "SELECT session_id, sequence, role, content, created_at_ms "
-        "FROM conversation_messages LIMIT 0"
-    )
-    async with connection.execute("PRAGMA table_info(conversation_sessions)") as cursor:
-        session_columns = {row[1] for row in await cursor.fetchall()}
-    async with connection.execute("PRAGMA table_info(conversation_messages)") as cursor:
-        message_columns = {row[1] for row in await cursor.fetchall()}
+    await connection.execute("SELECT session_id, created_at_ms, updated_at_ms FROM conversation_sessions LIMIT 0")
+    await connection.execute("SELECT session_id, sequence, role, content, created_at_ms FROM conversation_messages LIMIT 0")
+    cursor_context = connection.execute("PRAGMA table_info(conversation_sessions)")
+    async with cursor_context as cursor:
+        rows = await cursor.fetchall()
+        session_columns = {row[1] for row in rows}
+    cursor_context = connection.execute("PRAGMA table_info(conversation_messages)")
+    async with cursor_context as cursor:
+        rows = await cursor.fetchall()
+        message_columns = {row[1] for row in rows}
     if "profile_id" not in session_columns:
         await connection.execute("ALTER TABLE conversation_sessions ADD COLUMN profile_id TEXT")
     if "reasoning" not in message_columns:

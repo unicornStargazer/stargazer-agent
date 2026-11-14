@@ -19,13 +19,12 @@ class ConversationCommand:
 
     def fingerprint(self) -> str:
         """相同文本但不同显式模型也视为冲突；算法 v1 必须跨重启保持稳定。"""
-        canonical = json.dumps(
-            {"version": 1, "message": self.message, "profileId": self.profile_id},
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return "v1:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        payload = {"version": 1, "message": self.message, "profileId": self.profile_id}
+        canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        encoded = canonical.encode("utf-8")
+        digest = hashlib.sha256(encoded)
+        hexadecimal = digest.hexdigest()
+        return "v1:" + hexadecimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +44,13 @@ class ConversationTurn:
     assistant: AssistantReply
 
     def __post_init__(self) -> None:
-        if not self.user_content.strip() or not self.assistant.content.strip():
+        raw_user_content = self.user_content
+        user_content = raw_user_content.strip()
+        if not user_content:
+            raise ValueError("完整会话轮次的用户消息和助手回答不能为空")
+        assistant_content = self.assistant.content
+        stripped_content = assistant_content.strip()
+        if not stripped_content:
             raise ValueError("完整会话轮次的用户消息和助手回答不能为空")
 
 

@@ -12,7 +12,13 @@ def complete_turns(messages: tuple[HistoryMessage, ...]) -> tuple[ConversationTu
         if message.role == MessageRole.USER:
             pending = message.content
         elif pending is not None and message.reply is not None:
-            if pending.strip() and message.reply.content.strip():
-                turns.append(ConversationTurn(pending, message.reply))
+            user_content = pending.strip()
+            if user_content:
+                content = message.reply.content
+                assistant_content = content.strip()
+                if assistant_content:
+                    turn = ConversationTurn(pending, message.reply)
+                    turns.append(turn)
             pending = None
-    return tuple(turns)
+    completed = tuple(turns)
+    return completed

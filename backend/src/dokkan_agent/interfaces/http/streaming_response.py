@@ -12,46 +12,46 @@ from dokkan_agent.application.conversation.service import PreparedConversation
 
 
 class ConversationStreamingResponse(StreamingResponse):
-    def __init__(
-        self, content: AsyncGenerator[bytes, None], prepared: PreparedConversation
-    ) -> None:
-        super().__init__(
-            content, media_type="text/event-stream", headers={"Cache-Control": "no-store"}
-        )
+    def __init__(self, content: AsyncGenerator[bytes, None], prepared: PreparedConversation) -> None:
+        StreamingResponse.__init__(self, content, media_type="text/event-stream", headers={"Cache-Control": "no-store"})
         self._events = content
         self._prepared = prepared
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            await super().__call__(scope, receive, send)
+            await StreamingResponse.__call__(self, scope, receive, send)
         finally:
-            with anyio.CancelScope(shield=True):
+            cleanup_scope = anyio.CancelScope(shield=True)
+            with cleanup_scope:
                 try:
-                    await self._events.aclose()
+                    events = self._events
+                    await events.aclose()
                 finally:
-                    await self._prepared.aclose()
+                    prepared = self._prepared
+                    await prepared.aclose()
 
 
-async def until_disconnect[T](
-    request: Request,
-    operation: Awaitable[T],
-    abandon: Callable[[T], Awaitable[None]] | None = None,
-) -> T:
+async def until_disconnect[T](request: Request, operation: Awaitable[T], abandon: Callable[[T], Awaitable[None]] | None = None) -> T:
     """非流请求也传播断开；请求体已消费后只监听 disconnect，不轮询占用事件循环。"""
 
     async def watch() -> None:
-        while (await request.receive())["type"] != "http.disconnect":
-            pass
+        while True:
+            message = await request.receive()
+            if message["type"] == "http.disconnect":
+                break
 
     running = asyncio.ensure_future(operation)
-    disconnected = asyncio.create_task(watch())
+    watcher = watch()
+    disconnected = asyncio.create_task(watcher)
     delivered = False
 
     async def stop_tasks() -> None:
         disconnected.cancel()
-        if not running.done():
+        finished = running.done()
+        if not finished:
             running.cancel()
-        with anyio.CancelScope(shield=True):
+        cleanup_scope = anyio.CancelScope(shield=True)
+        with cleanup_scope:
             await asyncio.gather(running, disconnected, return_exceptions=True)
 
     try:
@@ -64,8 +64,14 @@ async def until_disconnect[T](
         return result
     finally:
         if not delivered:
-            with anyio.CancelScope(shield=True):
+            cleanup_scope = anyio.CancelScope(shield=True)
+            with cleanup_scope:
                 await stop_tasks()
-                if abandon and not running.cancelled() and running.exception() is None:
-                    # prepare 已完成但响应尚未接管租约时，也必须释放它。
-                    await abandon(running.result())
+                if abandon:
+                    cancelled = running.cancelled()
+                    if not cancelled:
+                        error = running.exception()
+                        if error is None:
+                            # prepare 已完成但响应尚未接管租约时，也必须释放它。
+                            abandoned = running.result()
+                            await abandon(abandoned)

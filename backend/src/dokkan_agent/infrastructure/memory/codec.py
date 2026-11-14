@@ -17,11 +17,13 @@ MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 def usage_payload(usage: TokenUsage) -> dict[str, int]:
     """不将未知字段伪造为零，也不重复累加 reasoning 子项。"""
-    return {
-        external: count
-        for external, internal in USAGE_FIELDS.items()
-        if (count := getattr(usage, internal)) is not None
-    }
+    payload: dict[str, int] = {}
+    fields = USAGE_FIELDS.items()
+    for external, internal in fields:
+        count = getattr(usage, internal)
+        if count is not None:
+            payload[external] = count
+    return payload
 
 
 def decode_usage(content: str | None) -> TokenUsage | None:
@@ -29,14 +31,21 @@ def decode_usage(content: str | None) -> TokenUsage | None:
         return None
     try:
         payload = json.loads(content)
-        if not isinstance(payload, dict) or any(key not in USAGE_FIELDS for key in payload):
+        is_mapping = isinstance(payload, dict)
+        if not is_mapping:
             raise ValueError
-        if any(
-            type(value) is not int or not 0 <= value <= MAX_SAFE_INTEGER
-            for value in payload.values()
-        ):
-            raise ValueError
-        return TokenUsage(**{USAGE_FIELDS[key]: value for key, value in payload.items()})
+        for key in payload:
+            if key not in USAGE_FIELDS:
+                raise ValueError
+        values = payload.values()
+        for value in values:
+            value_type = type(value)
+            if value_type is not int or not 0 <= value <= MAX_SAFE_INTEGER:
+                raise ValueError
+        items = payload.items()
+        fields = {USAGE_FIELDS[key]: value for key, value in items}
+        usage = TokenUsage(**fields)
+        return usage
     except (ValueError, TypeError, RecursionError):
         raise ConversationStorageError("会话用量数据无效。") from None
 
@@ -46,20 +55,31 @@ def encode_reply(reply: AssistantReply) -> str:
     if reply.reasoning is not None:
         message["reasoning"] = reply.reasoning
     if reply.usage is not None:
-        message["usage"] = usage_payload(reply.usage)
-    return json.dumps({"message": message}, ensure_ascii=True, separators=(",", ":"))
+        usage = usage_payload(reply.usage)
+        message["usage"] = usage
+    content = json.dumps({"message": message}, ensure_ascii=True, separators=(",", ":"))
+    return content
 
 
 def decode_reply(content: str) -> AssistantReply:
     try:
         payload = json.loads(content)
         message = payload["message"]
-        if message["role"] != "assistant" or not isinstance(message["content"], str):
+        if message["role"] != "assistant":
+            raise ValueError
+        is_content_text = isinstance(message["content"], str)
+        if not is_content_text:
             raise ValueError
         reasoning = message.get("reasoning")
-        if reasoning is not None and not isinstance(reasoning, str):
-            raise ValueError
-        usage = decode_usage(json.dumps(message["usage"])) if "usage" in message else None
-        return AssistantReply(message["content"], reasoning, usage)
+        if reasoning is not None:
+            is_reasoning_text = isinstance(reasoning, str)
+            if not is_reasoning_text:
+                raise ValueError
+        usage = None
+        if "usage" in message:
+            usage_json = json.dumps(message["usage"])
+            usage = decode_usage(usage_json)
+        reply = AssistantReply(message["content"], reasoning, usage)
+        return reply
     except (ValueError, TypeError, KeyError, RecursionError):
         raise ConversationStorageError("请求重放数据无效。") from None

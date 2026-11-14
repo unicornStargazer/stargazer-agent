@@ -41,21 +41,29 @@ class FunctionTool[Parameters: BaseModel, Output: BaseModel]:
 
     @property
     def definition(self) -> ToolDefinition:
-        schema = cast(dict[str, JsonValue], self.parameters.model_json_schema())
-        return ToolDefinition(self.name, self.description, schema)
+        parameters = self.parameters
+        raw_schema = parameters.model_json_schema()
+        schema = cast(dict[str, JsonValue], raw_schema)
+        definition = ToolDefinition(self.name, self.description, schema)
+        return definition
 
     async def execute(self, arguments: dict[str, JsonValue], context: RunContext) -> JsonValue:
-        parsed = self.parameters.model_validate(arguments, strict=True)
+        parameters = self.parameters
+        parsed = parameters.model_validate(arguments, strict=True)
         try:
             response = await self.handler(parsed, context)
             # 先转回字段映射再校验，避免 model_construct 或实例默认跳过重校验。
-            fields = (
-                response.model_dump(warnings="error")
-                if isinstance(response, BaseModel)
-                else response
-            )
-            checked = self.output.model_validate(fields, strict=True)
-            return cast(JsonValue, checked.model_dump(mode="json", exclude_none=True))
+            is_model = isinstance(response, BaseModel)
+            fields: object
+            if is_model:
+                fields = response.model_dump(warnings="error")
+            else:
+                fields = response
+            output = self.output
+            checked = output.model_validate(fields, strict=True)
+            payload = checked.model_dump(mode="json", exclude_none=True)
+            result = cast(JsonValue, payload)
+            return result
         except (BudgetExceeded, SkillAccessError):
             raise
         except Exception:

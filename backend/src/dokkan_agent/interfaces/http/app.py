@@ -24,13 +24,15 @@ def create_http_app(lifespan: Lifespan[FastAPI], static_directory: Path) -> Fast
 
     @app.get("/health/live")
     async def liveness(request: Request) -> dict[str, bool]:
-        return {"alive": bool(request.app.state.started)}
+        started = bool(request.app.state.started)
+        return {"alive": started}
 
     @app.get("/health/ready")
     async def readiness(request: Request) -> JSONResponse:
         # 就绪表示启动校验/迁移完成，不代表远程模型实时可用；不发送付费探测。
         ready = bool(request.app.state.started)
-        return JSONResponse(status_code=200 if ready else 503, content={"ready": ready})
+        response = JSONResponse(status_code=200 if ready else 503, content={"ready": ready})
+        return response
 
     register_static_files(app, static_directory)
     return app

@@ -11,29 +11,25 @@ from dokkan_agent.interfaces.http.schemas import ProfileResponse
 from dokkan_agent.interfaces.http.services import HttpServices
 
 
-def create_http_services(
-    settings: Settings, repository: ConversationRepository, runner: AgentRunner
-) -> HttpServices:
-    profiles = ProfileCatalog(
-        tuple(_run_profile(profile) for profile in settings.agents.profiles),
-        settings.agents.default_profile_id,
-    )
-    public = tuple(
-        ProfileResponse(id=profile.id, name=profile.name, model=profile.model)
-        for profile in settings.agents.profiles
-    )
-    return HttpServices(
-        ConversationService(repository, runner, profiles, create_run_limits(settings.runtime)),
-        public,
-        next(profile for profile in public if profile.id == profiles.default.id),
-    )
+def create_http_services(settings: Settings, repository: ConversationRepository, runner: AgentRunner) -> HttpServices:
+    run_profiles: list[RunProfile] = []
+    public_profiles: list[ProfileResponse] = []
+    for profile in settings.agents.profiles:
+        run_profile = _run_profile(profile)
+        run_profiles.append(run_profile)
+        public_profile = ProfileResponse(id=profile.id, name=profile.name, model=profile.model)
+        public_profiles.append(public_profile)
+    configured_profiles = tuple(run_profiles)
+    profiles = ProfileCatalog(configured_profiles, settings.agents.default_profile_id)
+    public = tuple(public_profiles)
+    limits = create_run_limits(settings.runtime)
+    conversations = ConversationService(repository, runner, profiles, limits)
+    default_candidates = (profile for profile in public if profile.id == profiles.default.id)
+    default_profile = next(default_candidates)
+    services = HttpServices(conversations, public, default_profile)
+    return services
 
 
 def _run_profile(profile: ProfileSettings) -> RunProfile:
-    return RunProfile(
-        profile.id,
-        profile.model,
-        profile.system_prompt,
-        profile.history_limit,
-        profile.supports_tools,
-    )
+    run_profile = RunProfile(profile.id, profile.model, profile.system_prompt, profile.history_limit, profile.supports_tools)
+    return run_profile

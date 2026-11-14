@@ -13,7 +13,7 @@ sequenceDiagram
     participant App as ConversationService
     participant DB as SQLite Repository
     participant Run as AgentRunner
-    participant Model as ModelGateway / HTTPX
+    participant Model as ModelGateway / OpenAI SDK
     participant Tools as ToolRegistry / SkillService
     Web->>HTTP: POST /api/chat/stream
     HTTP->>HTTP: JSON / 32 KiB / 字段校验
@@ -71,7 +71,7 @@ sequenceDiagram
 - Skill 全局独立于模型。首次只给 Catalog，按需披露正文和单份资源，不读取开发辅助 `.codex/skills`。
 - 网络调用不在 SQLite 事务内。同 session 排队，跨 session 并发；锁只保留活跃引用。
 - 请求指纹包含正文和显式 profileId。成功跨重启重放；相同键不同输入冲突；正在等待的重复请求不自动接管失败执行。
-- Provider 用 HTTPX 访问 `baseUrl + /chat/completions`，要求模型支持工具调用；公开 reasoning 透传，不生成隐藏思考过程。
+- Provider 用官方 OpenAI SDK 的 `AsyncOpenAI` 访问 `baseUrl + /chat/completions`，复用显式配置的 HTTPX 连接池；SDK 负责请求构造、认证和上游错误处理；适配层通过 SDK 的原始流响应接口保留有界 SSE 校验、领域事件与工具片段归并。要求模型支持工具调用；公开 reasoning 透传，不生成隐藏思考过程。
 - 收到 finish_reason 后继续读取尾部 usage。`[DONE]` 或带结束原因的干净 EOF 才结束调用；无结束原因、残缺 SSE 或工具 JSON 都失败。单次流限制 4 MiB，单事件 1 Mi 字符，每批最多 128 个工具片段索引，工具参数最多 64000 字符；执行预算还会进一步收紧。
 - Provider 默认连接超时 10 秒、读取超时 60 秒、最多两次连接尝试。当前调用未输出领域事件时才重试网络/429/5xx；输出后失败不自动重新生成答案。
 - 客户端断开向上游传播取消。准备完成但响应尚未接管、流未开始、流中断等路径都负责关闭租约；失败清理也无法写库时，下次启动收敛 running。

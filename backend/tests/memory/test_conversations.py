@@ -1,5 +1,4 @@
 """临时真实 SQLite 与运行器集成：原子性、跨重启幂等、并发和中断恢复。"""
-
 import asyncio
 import sqlite3
 from collections.abc import AsyncGenerator
@@ -40,200 +39,264 @@ from dokkan_agent.infrastructure.skill.filesystem_catalog import FilesystemSkill
 
 
 class ControlledModel:
+
     def __init__(self) -> None:
         self.requests: list[ModelRequest] = []
         self.entered = asyncio.Event()
         self.second_entered = asyncio.Event()
         self.release = asyncio.Event()
-        self.release.set()
+        release = self.release
+        release.set()
         self.fail = False
         self.closed = 0
 
     async def stream(self, request: ModelRequest) -> AsyncGenerator[ModelEvent, None]:
-        self.requests.append(request)
-        self.entered.set()
-        if len(self.requests) >= 2:
-            self.second_entered.set()
+        requests = self.requests
+        requests.append(request)
+        entered = self.entered
+        entered.set()
+        item_count = len(self.requests)
+        if item_count >= 2:
+            second_entered = self.second_entered
+            second_entered.set()
         try:
-            await self.release.wait()
-            yield ReasoningDelta("公开摘要")
-            yield ContentDelta("回答")
+            release = self.release
+            await release.wait()
+            reasoning_delta = ReasoningDelta('公开摘要')
+            yield reasoning_delta
+            content_delta = ContentDelta('回答')
+            yield content_delta
             if self.fail:
-                raise ModelUnavailableError("模拟网络失败")
-            yield UsageReported(TokenUsage(2, 3, 1, 5))
-            yield ModelCompleted("stop")
+                model_unavailable_error = ModelUnavailableError('模拟网络失败')
+                raise model_unavailable_error
+            token_usage = TokenUsage(2, 3, 1, 5)
+            usage_reported = UsageReported(token_usage)
+            yield usage_reported
+            model_completed = ModelCompleted('stop')
+            yield model_completed
         finally:
             self.closed += 1
 
 
-def build_service(
-    repository: SqliteConversationRepository, model: ControlledModel
-) -> ConversationService:
-    profiles = ProfileCatalog((RunProfile("a", "model-a"), RunProfile("b", "model-b")), "a")
-    return ConversationService(
-        repository, create_agent_runner(model, FilesystemSkillCatalog(())), profiles, RunLimits()
-    )
+def build_service(repository: SqliteConversationRepository, model: ControlledModel) -> ConversationService:
+    run_profile = RunProfile('a', 'model-a')
+    run_profile_2 = RunProfile('b', 'model-b')
+    profiles = ProfileCatalog((run_profile, run_profile_2), 'a')
+    catalog = FilesystemSkillCatalog(())
+    generated_runner = create_agent_runner(model, catalog)
+    run_limits = RunLimits()
+    service = ConversationService(repository, generated_runner, profiles, run_limits)
+    return service
 
 
-async def test_replay_survives_restart_switch_keeps_history_and_delete_cascades(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "sessions.sqlite"
+async def test_replay_survives_restart_switch_keeps_history_and_delete_cascades(tmp_path: Path) -> None:
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     repository = SqliteConversationRepository(database)
     model = ControlledModel()
     service = build_service(repository, model)
-    first = ConversationCommand("s", "r1", "问题", "a")
+    first = ConversationCommand('s', 'r1', '问题', 'a')
     reply = await service.chat(first)
-    assert reply == AssistantReply("回答", "公开摘要", TokenUsage(2, 3, 1, 5))
-    restarted = build_service(SqliteConversationRepository(database), model)
-    assert await restarted.chat(first) == reply
-    assert len(model.requests) == 1
-    with pytest.raises(RequestConflictError):
-        await restarted.chat(ConversationCommand("s", "r1", "不同问题", "a"))
-    await restarted.chat(ConversationCommand("s", "r2", "继续", "b"))
-    await restarted.chat(ConversationCommand("s", "r3", "继续"))
-    assert [request.model for request in model.requests] == ["model-a", "model-b", "model-b"]
-    assert any(message.content == "问题" for message in model.requests[1].messages)
-    assert len(await service.history("s")) == 6
-    await restarted.delete("s")
-    assert await service.history("s") == ()
-    assert await repository.get_request(first) is None
+    token_usage = TokenUsage(2, 3, 1, 5)
+    assistant_reply = AssistantReply('回答', '公开摘要', token_usage)
+    assert reply == assistant_reply
+    restarted_repository = SqliteConversationRepository(database)
+    restarted = build_service(restarted_repository, model)
+    chat = await restarted.chat(first)
+    assert chat == reply
+    item_count = len(model.requests)
+    assert item_count == 1
+    expected_error = pytest.raises(RequestConflictError)
+    with expected_error:
+        conversation_command = ConversationCommand('s', 'r1', '不同问题', 'a')
+        await restarted.chat(conversation_command)
+    conversation_command_2 = ConversationCommand('s', 'r2', '继续', 'b')
+    await restarted.chat(conversation_command_2)
+    conversation_command_3 = ConversationCommand('s', 'r3', '继续')
+    await restarted.chat(conversation_command_3)
+    assert [request.model for request in model.requests] == ['model-a', 'model-b', 'model-b']
+    any_result = any(message.content == '问题' for message in model.requests[1].messages)
+    assert any_result
+    history = await service.history('s')
+    item_count_2 = len(history)
+    assert item_count_2 == 6
+    await restarted.delete('s')
+    history_2 = await service.history('s')
+    assert history_2 == ()
+    stored_request = await repository.get_request(first)
+    assert stored_request is None
 
 
-async def test_duplicate_waits_without_second_generation_and_other_session_runs(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "sessions.sqlite"
+async def test_duplicate_waits_without_second_generation_and_other_session_runs(tmp_path: Path) -> None:
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     model = ControlledModel()
-    model.release.clear()
-    service = build_service(SqliteConversationRepository(database), model)
-    command = ConversationCommand("s", "r", "问题")
-    first = asyncio.create_task(service.chat(command))
-    await model.entered.wait()
-    duplicate = asyncio.create_task(service.chat(command))
-    other = asyncio.create_task(service.chat(ConversationCommand("other", "r", "问题")))
-    with pytest.raises(SessionBusyError):
-        await service.delete("s")
-    async with asyncio.timeout(5):
-        await model.second_entered.wait()
-    model.release.set()
+    release = model.release
+    release.clear()
+    restarted_repository = SqliteConversationRepository(database)
+    service = build_service(restarted_repository, model)
+    command = ConversationCommand('s', 'r', '问题')
+    chat = service.chat(command)
+    first = asyncio.create_task(chat)
+    entered = model.entered
+    await entered.wait()
+    chat_2 = service.chat(command)
+    duplicate = asyncio.create_task(chat_2)
+    conversation_command = ConversationCommand('other', 'r', '问题')
+    chat_3 = service.chat(conversation_command)
+    other = asyncio.create_task(chat_3)
+    expected_error = pytest.raises(SessionBusyError)
+    with expected_error:
+        await service.delete('s')
+    timeout = asyncio.timeout(5)
+    async with timeout:
+        second_entered = model.second_entered
+        await second_entered.wait()
+    release_2 = model.release
+    release_2.set()
     results = await asyncio.gather(first, duplicate, other)
     assert results[0] == results[1]
-    assert len(model.requests) == 2
+    item_count = len(model.requests)
+    assert item_count == 2
     assert service.locks._entries == {}
 
 
-async def test_failed_waiter_does_not_automatically_retry_and_later_attempts_are_bounded(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "sessions.sqlite"
+async def test_failed_waiter_does_not_automatically_retry_and_later_attempts_are_bounded(tmp_path: Path) -> None:
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     model = ControlledModel()
     model.fail = True
-    model.release.clear()
+    release = model.release
+    release.clear()
     repository = SqliteConversationRepository(database)
     service = build_service(repository, model)
 
     class ObservedLocks(SessionLocks):
+
         def __init__(self) -> None:
-            super().__init__()
+            SessionLocks.__init__(self)
             self.waiter_entered = asyncio.Event()
 
-        async def acquire(self, session_id: str, *, reject_busy: bool = False) -> SessionLease:
+        async def acquire(self, session_id: str, *, reject_busy: bool=False) -> SessionLease:
             if session_id in self._entries:
-                self.waiter_entered.set()
-            return await super().acquire(session_id, reject_busy=reject_busy)
-
+                waiter_entered = self.waiter_entered
+                waiter_entered.set()
+            acquire = await SessionLocks.acquire(self, session_id, reject_busy=reject_busy)
+            return acquire
     observed = ObservedLocks()
     service.locks = observed
-    command = ConversationCommand("s", "r", "问题")
-    first = asyncio.create_task(service.chat(command))
-    await model.entered.wait()
-    duplicate = asyncio.create_task(service.chat(command))
-    async with asyncio.timeout(5):
-        await observed.waiter_entered.wait()
-    model.release.set()
+    command = ConversationCommand('s', 'r', '问题')
+    chat = service.chat(command)
+    first = asyncio.create_task(chat)
+    entered = model.entered
+    await entered.wait()
+    chat_2 = service.chat(command)
+    duplicate = asyncio.create_task(chat_2)
+    timeout = asyncio.timeout(5)
+    async with timeout:
+        waiter_entered = observed.waiter_entered
+        await waiter_entered.wait()
+    release_2 = model.release
+    release_2.set()
     results = await asyncio.gather(first, duplicate, return_exceptions=True)
-    assert all(isinstance(result, ModelUnavailableError) for result in results)
-    assert len(model.requests) == 1
-    for _ in range(2):
-        with pytest.raises(ModelUnavailableError):
+    unavailable_results = []
+    for result in results:
+        unavailable = isinstance(result, ModelUnavailableError)
+        unavailable_results.append(unavailable)
+    all_unavailable = all(unavailable_results)
+    assert all_unavailable
+    item_count = len(model.requests)
+    assert item_count == 1
+    range_result = range(2)
+    for _ in range_result:
+        expected_error = pytest.raises(ModelUnavailableError)
+        with expected_error:
             await service.chat(command)
-    with pytest.raises(RequestAttemptsExceeded):
+    expected_error_2 = pytest.raises(RequestAttemptsExceeded)
+    with expected_error_2:
         await service.chat(command)
-    assert await service.history("s") == ()
+    history = await service.history('s')
+    assert history == ()
     record = await repository.get_request(command)
-    assert record and record.attempt == 3 and record.status == RequestStatus.FAILED
+    assert record and record.attempt == 3 and (record.status == RequestStatus.FAILED)
 
 
-async def test_cancel_closes_upstream_releases_lock_and_restart_recovers_running(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "sessions.sqlite"
+async def test_cancel_closes_upstream_releases_lock_and_restart_recovers_running(tmp_path: Path) -> None:
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     repository = SqliteConversationRepository(database)
     model = ControlledModel()
-    model.release.clear()
+    release = model.release
+    release.clear()
     service = build_service(repository, model)
-    command = ConversationCommand("s", "r", "问题")
-    running = asyncio.create_task(service.chat(command))
-    await model.entered.wait()
+    command = ConversationCommand('s', 'r', '问题')
+    chat = service.chat(command)
+    running = asyncio.create_task(chat)
+    entered = model.entered
+    await entered.wait()
     running.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    expected_error = pytest.raises(asyncio.CancelledError)
+    with expected_error:
         await running
     assert model.closed == 1
     assert service.locks._entries == {}
     record = await repository.get_request(command)
     assert record and record.status == RequestStatus.INTERRUPTED
-    assert await repository.history("s") == ()
-    await repository.begin_request(command, "a")
-    assert await repository.recover_interrupted() == 1
-    model.release.set()
+    history = await repository.history('s')
+    assert history == ()
+    await repository.begin_request(command, 'a')
+    recovered_count = await repository.recover_interrupted()
+    assert recovered_count == 1
+    release_2 = model.release
+    release_2.set()
     await service.chat(command)
     succeeded = await repository.get_request(command)
     assert succeeded and succeeded.status == RequestStatus.SUCCEEDED
 
 
 async def test_second_message_failure_rolls_back_whole_turn(tmp_path: Path) -> None:
-    database = tmp_path / "sessions.sqlite"
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     repository = SqliteConversationRepository(database)
-    command = ConversationCommand("s", "r", "问题")
-    await repository.begin_request(command, "a")
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TRIGGER fail_assistant BEFORE INSERT ON conversation_messages "
-            "WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT, 'test failure'); END"
-        )
-    with pytest.raises(ConversationStorageError):
-        await repository.commit_reply(command, AssistantReply("回答"))
-    assert await repository.history("s") == ()
-    assert await repository.get_profile("s") is None
+    command = ConversationCommand('s', 'r', '问题')
+    await repository.begin_request(command, 'a')
+    database_connection = sqlite3.connect(database)
+    with database_connection as connection:
+        connection.execute("CREATE TRIGGER fail_assistant BEFORE INSERT ON conversation_messages WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+    expected_error = pytest.raises(ConversationStorageError)
+    with expected_error:
+        assistant_reply = AssistantReply('回答')
+        await repository.commit_reply(command, assistant_reply)
+    history = await repository.history('s')
+    assert history == ()
+    stored_profile = await repository.get_profile('s')
+    assert stored_profile is None
     record = await repository.get_request(command)
     assert record and record.status == RequestStatus.RUNNING
 
 
 async def test_cancel_after_running_commit_during_prepare_marks_interrupted(tmp_path: Path) -> None:
-    database = tmp_path / "sessions.sqlite"
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     registered = asyncio.Event()
 
     class PausedRepository(SqliteConversationRepository):
-        async def begin_request(self, command: ConversationCommand, profile_id: str) -> None:
-            await super().begin_request(command, profile_id)
-            registered.set()
-            await asyncio.Event().wait()
 
+        async def begin_request(self, command: ConversationCommand, profile_id: str) -> None:
+            await SqliteConversationRepository.begin_request(self, command, profile_id)
+            registered.set()
+            event = asyncio.Event()
+            await event.wait()
     repository = PausedRepository(database)
     model = ControlledModel()
     service = build_service(repository, model)
-    command = ConversationCommand("s", "r", "问题")
-    task = asyncio.create_task(service.prepare(command))
+    command = ConversationCommand('s', 'r', '问题')
+    prepare = service.prepare(command)
+    task = asyncio.create_task(prepare)
     await registered.wait()
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    expected_error = pytest.raises(asyncio.CancelledError)
+    with expected_error:
         await task
     record = await repository.get_request(command)
     assert record and record.status == RequestStatus.INTERRUPTED
@@ -241,15 +304,13 @@ async def test_cancel_after_running_commit_during_prepare_marks_interrupted(tmp_
     assert model.requests == []
 
 
-async def test_abandoned_prepared_request_can_release_without_starting_generator(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "sessions.sqlite"
+async def test_abandoned_prepared_request_can_release_without_starting_generator(tmp_path: Path) -> None:
+    database = tmp_path / 'sessions.sqlite'
     await migrate_database(database)
     repository = SqliteConversationRepository(database)
     model = ControlledModel()
     service = build_service(repository, model)
-    command = ConversationCommand("s", "r", "问题")
+    command = ConversationCommand('s', 'r', '问题')
     prepared = await service.prepare(command)
     await prepared.aclose()
     await prepared.aclose()

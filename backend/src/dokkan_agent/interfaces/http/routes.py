@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from typing import cast
 
 from fastapi import APIRouter, Request
 
@@ -39,82 +40,107 @@ router = APIRouter(prefix="/api")
 @router.get("/status", response_model=StatusResponse, response_model_exclude_none=True)
 async def status(request: Request) -> StatusResponse:
     services = get_services(request)
-    return StatusResponse(
-        ready=True,
-        model=services.default_profile.model,
-        conversation_storage="sqlite",
-        default_profile=services.default_profile,
-    )
+    response = StatusResponse(ready=True, model=services.default_profile.model, conversation_storage="sqlite", default_profile=services.default_profile)
+    return response
 
 
 @router.get("/profiles", response_model=ProfilesResponse, response_model_exclude_none=True)
 async def profiles(request: Request) -> ProfilesResponse:
-    return ProfilesResponse(profiles=list(get_services(request).profiles))
+    services = get_services(request)
+    available = list(services.profiles)
+    response = ProfilesResponse(profiles=available)
+    return response
 
 
 @router.get("/history", response_model=HistoryResponse, response_model_exclude_none=True)
 async def history(request: Request) -> HistoryResponse:
     query = read_session_query(request)
-    messages = await get_services(request).conversations.history(query.session_id)
-    return HistoryResponse(
-        messages=[
-            MessageResponse.from_reply(message.reply)
-            if message.reply
-            else MessageResponse(role="user", content=message.content)
-            for message in messages
-        ]
-    )
+    services = get_services(request)
+    conversations = services.conversations
+    messages = await conversations.history(query.session_id)
+    responses: list[MessageResponse] = []
+    for message in messages:
+        if message.reply:
+            response_message = MessageResponse.from_reply(message.reply)
+        else:
+            response_message = MessageResponse(role="user", content=message.content)
+        responses.append(response_message)
+    response = HistoryResponse(messages=responses)
+    return response
 
 
 @router.delete("/history", response_model=DeleteHistoryResponse, response_model_exclude_none=True)
 async def delete_history(request: Request) -> DeleteHistoryResponse:
     query = read_session_query(request)
-    await get_services(request).conversations.delete(query.session_id)
-    return DeleteHistoryResponse()
+    services = get_services(request)
+    conversations = services.conversations
+    await conversations.delete(query.session_id)
+    response = DeleteHistoryResponse()
+    return response
 
 
 @router.post("/chat", response_model=ChatResponse, response_model_exclude_none=True)
 async def chat(request: Request) -> ChatResponse:
     body = await read_chat_request(request)
-    reply = await until_disconnect(
-        request, get_services(request).conversations.chat(body.to_command())
-    )
-    return ChatResponse(message=MessageResponse.from_reply(reply))
+    services = get_services(request)
+    conversations = services.conversations
+    command = body.to_command()
+    operation = conversations.chat(command)
+    reply = await until_disconnect(request, operation)
+    message = MessageResponse.from_reply(reply)
+    response = ChatResponse(message=message)
+    return response
 
 
 @router.post("/chat/stream")
 async def stream_chat(request: Request) -> ConversationStreamingResponse:
     body = await read_chat_request(request)
-    prepared = await until_disconnect(
-        request,
-        get_services(request).conversations.prepare(body.to_command()),
-        PreparedConversation.aclose,
-    )
-    return ConversationStreamingResponse(_stream_events(prepared), prepared)
+    services = get_services(request)
+    conversations = services.conversations
+    command = body.to_command()
+    operation = conversations.prepare(command)
+    prepared = await until_disconnect(request, operation, PreparedConversation.aclose)
+    events = _stream_events(prepared)
+    response = ConversationStreamingResponse(events, prepared)
+    return response
 
 
 async def _stream_events(prepared: PreparedConversation) -> AsyncGenerator[bytes, None]:
     try:
-        async with aclosing(prepared.stream()) as events:
+        stream = prepared.stream()
+        stream_context = aclosing(stream)
+        async with stream_context as events:
             async for event in events:
-                if isinstance(event, ContentDelta):
-                    yield encode_event(ChunkEvent(content=event.content))
-                elif isinstance(event, ReasoningDelta):
-                    yield encode_event(ReasoningEvent(content=event.content))
-                elif isinstance(event, UsageReported):
-                    usage = event.usage
-                    yield encode_event(
-                        UsageEvent(
-                            usage=TokenUsageResponse(
-                                input_tokens=usage.input_tokens,
-                                output_tokens=usage.output_tokens,
-                                reasoning_tokens=usage.reasoning_tokens,
-                                total_tokens=usage.total_tokens,
-                            )
-                        )
-                    )
-                elif isinstance(event, AssistantReply):
-                    yield encode_event(DoneEvent())
+                is_content = isinstance(event, ContentDelta)
+                if is_content:
+                    content_delta = cast(ContentDelta, event)
+                    chunk_event = ChunkEvent(content=content_delta.content)
+                    encoded = encode_event(chunk_event)
+                    yield encoded
+                    continue
+                is_reasoning = isinstance(event, ReasoningDelta)
+                if is_reasoning:
+                    reasoning_delta = cast(ReasoningDelta, event)
+                    reasoning_event = ReasoningEvent(content=reasoning_delta.content)
+                    encoded = encode_event(reasoning_event)
+                    yield encoded
+                    continue
+                is_usage = isinstance(event, UsageReported)
+                if is_usage:
+                    usage_report = cast(UsageReported, event)
+                    usage = usage_report.usage
+                    usage_response = TokenUsageResponse(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, reasoning_tokens=usage.reasoning_tokens, total_tokens=usage.total_tokens)
+                    usage_event = UsageEvent(usage=usage_response)
+                    encoded = encode_event(usage_event)
+                    yield encoded
+                    continue
+                is_reply = isinstance(event, AssistantReply)
+                if is_reply:
+                    done_event = DoneEvent()
+                    encoded = encode_event(done_event)
+                    yield encoded
     except Exception as error:
         mapped = map_error(error)
-        yield encode_event(ErrorEvent(code=mapped.code, message=mapped.message))
+        error_event = ErrorEvent(code=mapped.code, message=mapped.message)
+        encoded = encode_event(error_event)
+        yield encoded

@@ -11,5 +11,5 @@ class SkillAccessError(RuntimeError):
     """可反馈模型的安全错误；路径越界、未激活和版本变化各有稳定代码。"""
 
     def __init__(self, code: ToolErrorCode, message: str) -> None:
-        super().__init__(message)
+        RuntimeError.__init__(self, message)
         self.code = code

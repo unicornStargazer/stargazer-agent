@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from dokkan_agent.domain.agent.errors import ModelUnavailableError
 from dokkan_agent.domain.agent.models import (
@@ -38,7 +38,8 @@ class CompletionDecoder:
 
     def accept(self, data: str) -> list[ModelEvent]:
         try:
-            return self._accept(data)
+            events = self._accept(data)
+            return events
         except (ValueError, TypeError, KeyError, RecursionError):
             raise ModelUnavailableError("模型返回了无效的流式数据。") from None
 
@@ -61,138 +62,187 @@ class CompletionDecoder:
             self.done = True
             return completed_events
         payload = json.loads(data)
-        if not isinstance(payload, dict) or "error" in payload:
+        is_mapping = isinstance(payload, dict)
+        if not is_mapping or "error" in payload:
             raise ValueError
         choices = payload.get("choices")
-        if not isinstance(choices, list) or len(choices) > 1:
+        is_list = isinstance(choices, list)
+        if not is_list:
+            raise ValueError
+        choice_count = len(choices)
+        if choice_count > 1:
             raise ValueError
         events: list[ModelEvent] = []
         if choices:
             choice = choices[0]
-            if not isinstance(choice, dict) or choice.get("index", 0) != 0:
+            is_mapping = isinstance(choice, dict)
+            if not is_mapping:
+                raise ValueError
+            index = choice.get("index", 0)
+            if index != 0:
                 raise ValueError
             delta = choice.get("delta", {})
-            if not isinstance(delta, dict):
+            is_mapping = isinstance(delta, dict)
+            if not is_mapping:
                 raise ValueError
             if self._finish_reason is not None:
-                # 一些服务的 usage 尾帧仍带空 delta；非空正文或工具则是协议错误。
-                if any(
-                    delta.get(key)
-                    for key in ("content", "reasoning_content", "reasoning", "tool_calls")
-                ):
+                # 一些服务的 usage 尾帧仍带空 delta；非空正文或工具是协议错误。
+                for key in ("content", "reasoning_content", "reasoning", "tool_calls"):
+                    value = delta.get(key)
+                    if value:
+                        raise ValueError
+                finish = choice.get("finish_reason")
+                if finish is not None:
                     raise ValueError
-                if choice.get("finish_reason") is not None:
-                    raise ValueError
-            events.extend(self._read_delta(delta))
+            deltas = self._read_delta(delta)
+            events.extend(deltas)
             finish = choice.get("finish_reason")
             if finish is not None:
-                if not isinstance(finish, str) or not finish:
+                is_text = isinstance(finish, str)
+                if not is_text or not finish:
                     raise ValueError
                 self._finish_reason = finish
         usage = payload.get("usage")
         if usage is not None:
-            events.append(UsageReported(_read_usage(usage)))
+            counts = _read_usage(usage)
+            usage_event = UsageReported(counts)
+            events.append(usage_event)
         return events
 
     def _read_delta(self, delta: dict[str, Any]) -> list[ModelEvent]:
         events: list[ModelEvent] = []
-        for key, event_type in (("content", ContentDelta),):
-            value = delta.get(key)
-            if value is not None:
-                if not isinstance(value, str):
-                    raise ValueError
-                if value:
-                    events.append(event_type(value))
+        value = delta.get("content")
+        if value is not None:
+            is_text = isinstance(value, str)
+            if not is_text:
+                raise ValueError
+            if value:
+                content = ContentDelta(value)
+                events.append(content)
         reasoning = delta.get("reasoning_content")
         if reasoning is None:
             reasoning = delta.get("reasoning")
         if reasoning is not None:
-            if not isinstance(reasoning, str):
+            is_text = isinstance(reasoning, str)
+            if not is_text:
                 raise ValueError
             if reasoning:
-                events.append(ReasoningDelta(reasoning))
+                reasoning_event = ReasoningDelta(reasoning)
+                events.append(reasoning_event)
         calls = delta.get("tool_calls")
         if calls is not None:
-            if not isinstance(calls, list) or len(calls) > MAX_TOOL_CALLS:
+            is_list = isinstance(calls, list)
+            if not is_list:
+                raise ValueError
+            call_count = len(calls)
+            if call_count > MAX_TOOL_CALLS:
                 raise ValueError
             for call in calls:
                 self._append_tool(call)
-        if delta.get("function_call"):
+        legacy_call = delta.get("function_call")
+        if legacy_call:
             raise ValueError("不混用旧版 function_call 协议")
         return events
 
     def _append_tool(self, payload: object) -> None:
-        if not isinstance(payload, dict):
+        is_mapping = isinstance(payload, dict)
+        if not is_mapping:
             raise ValueError
+        payload = cast(dict[str, Any], payload)
         index = payload.get("index")
-        if type(index) is not int or not 0 <= index < MAX_TOOL_CALLS:
+        index_type = type(index)
+        if index_type is not int:
             raise ValueError
-        fragment = self._tools.setdefault(index, ToolFragments())
-        if payload.get("type", "function") != "function":
+        index = cast(int, index)
+        if not 0 <= index < MAX_TOOL_CALLS:
+            raise ValueError
+        tools = self._tools
+        initial = ToolFragments()
+        fragment = tools.setdefault(index, initial)
+        call_type = payload.get("type", "function")
+        if call_type != "function":
             raise ValueError
         identifier = payload.get("id")
         if identifier is not None:
-            if not isinstance(identifier, str):
+            is_text = isinstance(identifier, str)
+            if not is_text:
                 raise ValueError
             fragment.identifier += identifier
         function = payload.get("function", {})
-        if not isinstance(function, dict):
+        is_mapping = isinstance(function, dict)
+        if not is_mapping:
             raise ValueError
         for key in ("name", "arguments"):
             value = function.get(key)
             if value is None:
                 continue
-            if not isinstance(value, str):
+            is_text = isinstance(value, str)
+            if not is_text:
                 raise ValueError
-            setattr(fragment, key, getattr(fragment, key) + value)
-        if (
-            len(fragment.identifier) > 256
-            or len(fragment.name) > 128
-            or len(fragment.arguments) > MAX_ARGUMENT_CHARACTERS
-        ):
+            previous = getattr(fragment, key)
+            setattr(fragment, key, previous + value)
+        id_size = len(fragment.identifier)
+        name_size = len(fragment.name)
+        argument_size = len(fragment.arguments)
+        if id_size > 256 or name_size > 128 or argument_size > MAX_ARGUMENT_CHARACTERS:
             raise ValueError
 
     def _finish(self) -> list[ModelEvent]:
         if self._finish_reason is None:
             raise ValueError("缺少结束原因")
-        if bool(self._tools) != (self._finish_reason == "tool_calls"):
+        has_tools = bool(self._tools)
+        if has_tools != (self._finish_reason == "tool_calls"):
             raise ValueError("工具与结束原因不匹配")
         events: list[ModelEvent] = []
         identifiers: set[str] = set()
-        if sorted(self._tools) != list(range(len(self._tools))):
+        indices = sorted(self._tools)
+        count = len(self._tools)
+        expected_range = range(count)
+        expected = list(expected_range)
+        if indices != expected:
             raise ValueError("工具索引不连续")
-        for index in sorted(self._tools):
+        for index in indices:
             fragment = self._tools[index]
-            if not fragment.identifier.strip() or not fragment.name.strip():
+            identifier = fragment.identifier
+            name = fragment.name
+            clean_id = identifier.strip()
+            clean_name = name.strip()
+            if not clean_id or not clean_name:
                 raise ValueError("工具缺少标识或名称")
-            if fragment.identifier in identifiers:
+            if identifier in identifiers:
                 raise ValueError("工具标识重复")
             arguments = json.loads(fragment.arguments)
-            if not isinstance(arguments, dict):
+            is_mapping = isinstance(arguments, dict)
+            if not is_mapping:
                 raise ValueError("工具参数必须是 JSON 对象")
-            identifiers.add(fragment.identifier)
-            events.append(
-                ToolCallReady(ToolCall(fragment.identifier, fragment.name, fragment.arguments))
-            )
-        events.append(ModelCompleted(self._finish_reason))
+            identifiers.add(identifier)
+            call = ToolCall(identifier, name, fragment.arguments)
+            tool_event = ToolCallReady(call)
+            events.append(tool_event)
+        completed = ModelCompleted(self._finish_reason)
+        events.append(completed)
         return events
 
 
 def _read_usage(payload: object) -> TokenUsage:
-    if not isinstance(payload, dict):
+    is_mapping = isinstance(payload, dict)
+    if not is_mapping:
         raise ValueError
-    details = payload.get("completion_tokens_details") or {}
-    if not isinstance(details, dict):
+    payload = cast(dict[str, Any], payload)
+    details = payload.get("completion_tokens_details")
+    if not details:
+        details = {}
+    is_mapping = isinstance(details, dict)
+    if not is_mapping:
         raise ValueError
-    counts = [
-        payload.get("prompt_tokens"),
-        payload.get("completion_tokens"),
-        details.get("reasoning_tokens"),
-        payload.get("total_tokens"),
-    ]
-    if any(
-        value is not None and (type(value) is not int or not 0 <= value <= MAX_SAFE_INTEGER)
-        for value in counts
-    ):
-        raise ValueError
-    return TokenUsage(*counts)
+    input_tokens = payload.get("prompt_tokens")
+    output_tokens = payload.get("completion_tokens")
+    reasoning_tokens = details.get("reasoning_tokens")
+    total_tokens = payload.get("total_tokens")
+    counts = [input_tokens, output_tokens, reasoning_tokens, total_tokens]
+    for value in counts:
+        value_type = type(value)
+        if value is not None and (value_type is not int or not 0 <= value <= MAX_SAFE_INTEGER):
+            raise ValueError
+    usage = TokenUsage(*counts)
+    return usage

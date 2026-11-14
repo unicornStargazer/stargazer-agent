@@ -26,13 +26,7 @@ type PositiveSafeInt = Annotated[int, Field(gt=0, le=9_007_199_254_740_991)]
 class FileSettings(BaseModel):
     """配置使用 camelCase；拒绝拼错字段，避免配置看似生效但实际被忽略。"""
 
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        extra="forbid",
-        strict=True,
-        frozen=True,
-        hide_input_in_errors=True,
-    )
+    model_config = ConfigDict(alias_generator=to_camel, extra="forbid", strict=True, frozen=True, hide_input_in_errors=True)
 
 
 class ServerSettings(FileSettings):
@@ -61,9 +55,12 @@ class ProviderSettings(FileSettings):
     @field_validator("api_key")
     @classmethod
     def require_api_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+        secret = value.get_secret_value()
+        stripped = secret.strip()
+        if not stripped:
             raise ValueError("apiKey 不能为空")
-        return SecretStr(value.get_secret_value().strip())
+        validated = SecretStr(stripped)
+        return validated
 
     @field_validator("base_url")
     @classmethod
@@ -73,7 +70,8 @@ class ProviderSettings(FileSettings):
             raise ValueError("baseUrl 必须是 HTTP(S) 地址")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("baseUrl 不能包含凭据、查询参数或片段")
-        return value.rstrip("/")
+        normalized = value.rstrip("/")
+        return normalized
 
 
 class ProfileSettings(FileSettings):
@@ -104,7 +102,10 @@ class AgentSettings(FileSettings):
     @model_validator(mode="after")
     def validate_profile_references(self) -> Self:
         identifiers = [profile.id for profile in self.profiles]
-        if len(set(identifiers)) != len(identifiers):
+        unique_identifiers = set(identifiers)
+        unique_count = len(unique_identifiers)
+        identifier_count = len(identifiers)
+        if unique_count != identifier_count:
             raise ValueError("profiles 中的 id 不能重复")
         if self.default_profile_id not in identifiers:
             raise ValueError("defaultProfileId 必须引用 profiles 中的配置")
@@ -144,16 +145,22 @@ class LoadedSettings:
 
     def resolve_project_path(self, value: str) -> Path:
         """绝对路径保持语义，相对路径锚定项目根而非进程工作目录。"""
-        return (self.project_root / value).resolve()
+        path = self.project_root / value
+        resolved = path.resolve()
+        return resolved
 
     @property
     def database_path(self) -> Path:
-        return self.resolve_project_path(self.settings.storage.database_path)
+        path = self.resolve_project_path(self.settings.storage.database_path)
+        return path
 
     @property
     def skills_directory(self) -> Path | None:
         value = self.settings.skills_directory
-        return self.resolve_project_path(value) if value else None
+        if not value:
+            return None
+        path = self.resolve_project_path(value)
+        return path
 
 
 class ConfigurationError(ValueError):
@@ -163,7 +170,10 @@ class ConfigurationError(ValueError):
 def load_settings(project_root: Path, configuration_path: Path | None = None) -> LoadedSettings:
     """读取、校验文件并返回快照；失败抛脱敏异常，不产生数据库或网络副作用。"""
     root = project_root.resolve()
-    path = (root / (configuration_path or Path("config/stargazer-agent.json"))).resolve()
+    if configuration_path is None:
+        configuration_path = Path("config/stargazer-agent.json")
+    requested_path = root / configuration_path
+    path = requested_path.resolve()
     try:
         content = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
@@ -176,9 +186,13 @@ def load_settings(project_root: Path, configuration_path: Path | None = None) ->
         settings = Settings.model_validate(payload)
     except ValidationError as error:
         # 不使用 str(error)：跨字段校验错误可能携带整个含密钥的输入对象。
-        locations = [
-            f"{'.'.join(map(str, item['loc'])) or '配置根节点'} ({item['type']})"
-            for item in error.errors(include_input=False, include_context=False)
-        ]
-        raise ConfigurationError("配置校验失败：" + "; ".join(locations)) from None
-    return LoadedSettings(settings, root, path)
+        locations: list[str] = []
+        errors = error.errors(include_input=False, include_context=False)
+        for item in errors:
+            components = map(str, item["loc"])
+            location = ".".join(components)
+            locations.append(f"{location or '配置根节点'} ({item['type']})")
+        description = "; ".join(locations)
+        raise ConfigurationError("配置校验失败：" + description) from None
+    loaded = LoadedSettings(settings, root, path)
+    return loaded

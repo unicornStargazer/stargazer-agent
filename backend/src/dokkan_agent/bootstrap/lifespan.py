@@ -23,45 +23,32 @@ from dokkan_agent.infrastructure.skill.filesystem_catalog import FilesystemSkill
 LOGGER = logging.getLogger(__name__)
 
 
-def create_lifespan(
-    loaded: LoadedSettings, transport: httpx.AsyncBaseTransport | None
-) -> Lifespan[FastAPI]:
+def create_lifespan(loaded: LoadedSettings, transport: httpx.AsyncBaseTransport | None) -> Lifespan[FastAPI]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings = loaded.settings
         # 先校验 Skill 再打开库，错误部署不应留下数据库迁移副作用。
-        catalog = (
-            await asyncio.to_thread(FilesystemSkillCatalog.discover, loaded.skills_directory)
-            if loaded.skills_directory
-            else FilesystemSkillCatalog(())
-        )
-        await asyncio.to_thread(loaded.database_path.parent.mkdir, parents=True, exist_ok=True)
+        if loaded.skills_directory:
+            catalog = await asyncio.to_thread(FilesystemSkillCatalog.discover, loaded.skills_directory)
+        else:
+            catalog = FilesystemSkillCatalog(())
+        database_directory = loaded.database_path.parent
+        await asyncio.to_thread(database_directory.mkdir, parents=True, exist_ok=True)
         await migrate_database(loaded.database_path)
         repository = SqliteConversationRepository(loaded.database_path)
         recovered = await repository.recover_interrupted()
         LOGGER.info("会话存储就绪 interrupted_requests=%d", recovered)
         provider = settings.provider
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                provider.read_timeout_seconds, connect=provider.connect_timeout_seconds
-            ),
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
-            transport=transport,
-            trust_env=False,
-            follow_redirects=False,
-        ) as client:
-            gateway = OpenAICompatibleGateway(
-                client,
-                ProviderOptions(
-                    provider.base_url,
-                    provider.api_key.get_secret_value(),
-                    provider.include_stream_usage,
-                    provider.max_attempts,
-                ),
-            )
-            app.state.services = create_http_services(
-                settings, repository, create_agent_runner(gateway, catalog)
-            )
+        timeout = httpx.Timeout(provider.read_timeout_seconds, connect=provider.connect_timeout_seconds)
+        limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+        http_client = httpx.AsyncClient(timeout=timeout, limits=limits, transport=transport, trust_env=False, follow_redirects=False)
+        async with http_client as client:
+            secret = provider.api_key
+            api_key = secret.get_secret_value()
+            options = ProviderOptions(provider.base_url, api_key, provider.include_stream_usage, provider.max_attempts)
+            gateway = OpenAICompatibleGateway(client, options)
+            runner = create_agent_runner(gateway, catalog)
+            app.state.services = create_http_services(settings, repository, runner)
             app.state.started = True
             try:
                 yield

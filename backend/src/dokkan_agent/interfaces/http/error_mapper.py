@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -62,16 +63,25 @@ ERROR_MAPPINGS = (
 
 
 def map_error(error: Exception) -> ApiError:
-    if isinstance(error, ApiError):
-        return error
+    is_api_error = isinstance(error, ApiError)
+    if is_api_error:
+        mapped_error = cast(ApiError, error)
+        return mapped_error
     for error_type, status, code, message in ERROR_MAPPINGS:
-        if isinstance(error, error_type):
-            return ApiError(status, code, message)
-    LOGGER.error("未预期的应用异常 type=%s", type(error).__name__)
-    return ApiError(500, ErrorCode.INTERNAL_ERROR, "服务内部发生错误。")
+        matches = isinstance(error, error_type)
+        if matches:
+            mapped = ApiError(status, code, message)
+            return mapped
+    unexpected_type = type(error)
+    LOGGER.error("未预期的应用异常 type=%s", unexpected_type.__name__)
+    mapped = ApiError(500, ErrorCode.INTERNAL_ERROR, "服务内部发生错误。")
+    return mapped
 
 
 async def handle_error(request: Request, error: Exception) -> JSONResponse:
     mapped = map_error(error)
-    payload = ErrorResponse(error=ErrorDetail(code=mapped.code, message=mapped.message))
-    return JSONResponse(status_code=mapped.status, content=payload.model_dump(by_alias=True))
+    detail = ErrorDetail(code=mapped.code, message=mapped.message)
+    payload = ErrorResponse(error=detail)
+    content = payload.model_dump(by_alias=True)
+    response = JSONResponse(status_code=mapped.status, content=content)
+    return response

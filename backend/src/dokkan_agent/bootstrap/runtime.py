@@ -14,10 +14,15 @@ from dokkan_agent.infrastructure.tool.skill_tools import create_skill_tools
 def create_agent_runner(model: ModelGateway, catalog: SkillCatalog) -> AgentRunner:
     """正式集合只注册 Skill 工具；echo 示例由演示/测试单独装配。"""
     skills = SkillService(catalog)
-    tools = ToolRegistry(create_skill_tools(skills))
-    return AgentRunner(model, tools, ContextBuilder(skills, tools))
+    skill_tools = create_skill_tools(skills)
+    tools = ToolRegistry(skill_tools)
+    builder = ContextBuilder(skills, tools)
+    runner = AgentRunner(model, tools, builder)
+    return runner
 
 
 def create_run_limits(settings: RuntimeSettings) -> RunLimits:
     """配置 DTO 到纯领域对象的显式边界，不让运行器依赖 Pydantic 配置。"""
-    return RunLimits(**settings.model_dump())
+    values = settings.model_dump()
+    limits = RunLimits(**values)
+    return limits

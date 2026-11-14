@@ -12,21 +12,31 @@ def register_static_files(app: FastAPI, directory: Path) -> None:
 
     @app.get("/{asset_path:path}", include_in_schema=False)
     async def static_file(request: Request, asset_path: str) -> FileResponse:
-        raw = unquote(request.scope.get("raw_path", b"").decode("ascii", errors="replace"))
+        scope = request.scope
+        raw_path = scope.get("raw_path", b"")
+        decoded_path = raw_path.decode("ascii", errors="replace")
+        raw = unquote(decoded_path)
         normalized = raw.replace("\\", "/")
-        if ".." in normalized.split("/") or "\x00" in normalized:
+        parts = normalized.split("/")
+        if ".." in parts or "\x00" in normalized:
             raise HTTPException(404)
-        if asset_path == "api" or asset_path.startswith("api/") or "\\" in asset_path:
+        if asset_path == "api":
+            raise HTTPException(404)
+        is_api_path = asset_path.startswith("api/")
+        if is_api_path or "\\" in asset_path:
             raise HTTPException(404)
         try:
-            target = (root / (asset_path or "index.html")).resolve()
-            if not target.is_relative_to(root) or not target.is_file():
+            relative = root / (asset_path or "index.html")
+            target = relative.resolve()
+            is_relative = target.is_relative_to(root)
+            if not is_relative:
+                raise HTTPException(404)
+            is_file = target.is_file()
+            if not is_file:
                 raise HTTPException(404)
         except (OSError, ValueError, RuntimeError):
             raise HTTPException(404) from None
-        cache = (
-            "public, max-age=31536000, immutable"
-            if asset_path.startswith("assets/")
-            else "no-cache"
-        )
-        return FileResponse(target, headers={"Cache-Control": cache})
+        is_asset = asset_path.startswith("assets/")
+        cache = "public, max-age=31536000, immutable" if is_asset else "no-cache"
+        response = FileResponse(target, headers={"Cache-Control": cache})
+        return response

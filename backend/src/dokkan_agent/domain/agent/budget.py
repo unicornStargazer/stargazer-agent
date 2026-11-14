@@ -22,7 +22,8 @@ class RunLimits:
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
-            if type(value) is not int or value < 1:
+            value_type = type(value)
+            if value_type is not int or value < 1:
                 raise ValueError("运行预算必须是正整数")
 
 
@@ -42,15 +43,11 @@ class RunBudget:
         self.model_calls += 1
 
     def consume_tool_execution(self) -> None:
-        self._require_available(
-            self.tool_executions, self.limits.max_tool_executions, "工具执行次数"
-        )
+        self._require_available(self.tool_executions, self.limits.max_tool_executions, "工具执行次数")
         self.tool_executions += 1
 
     def consume_activation(self) -> None:
-        self._require_available(
-            self.activated_skills, self.limits.max_activated_skills, "Skill 激活数"
-        )
+        self._require_available(self.activated_skills, self.limits.max_activated_skills, "Skill 激活数")
         self.activated_skills += 1
 
     def consume_resource_read(self) -> None:

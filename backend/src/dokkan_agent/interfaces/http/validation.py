@@ -11,12 +11,14 @@ MAX_BODY_BYTES = 32 * 1024
 
 
 async def read_chat_request(request: Request) -> ChatRequest:
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    headers = request.headers
+    content_type = headers.get("content-type", "")
+    media_parts = content_type.split(";", 1)
+    stripped_media_type = media_parts[0].strip()
+    media_type = stripped_media_type.lower()
     if media_type != "application/json":
-        raise ApiError(
-            415, ErrorCode.UNSUPPORTED_MEDIA_TYPE, "Content-Type 必须为 application/json。"
-        )
-    length = request.headers.get("content-length")
+        raise ApiError(415, ErrorCode.UNSUPPORTED_MEDIA_TYPE, "Content-Type 必须为 application/json。")
+    length = headers.get("content-length")
     if length:
         try:
             declared = int(length)
@@ -27,20 +29,29 @@ async def read_chat_request(request: Request) -> ChatRequest:
         if declared > MAX_BODY_BYTES:
             raise ApiError(413, ErrorCode.REQUEST_TOO_LARGE, "请求体超过 32 KiB。")
     body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_BODY_BYTES:
+    stream = request.stream()
+    async for chunk in stream:
+        body_size = len(body)
+        chunk_size = len(chunk)
+        if body_size + chunk_size > MAX_BODY_BYTES:
             raise ApiError(413, ErrorCode.REQUEST_TOO_LARGE, "请求体超过 32 KiB。")
         body.extend(chunk)
     try:
-        return ChatRequest.model_validate_json(body)
+        chat_request = ChatRequest.model_validate_json(body)
+        return chat_request
     except (ValidationError, ValueError):
         raise ApiError(400, ErrorCode.INVALID_REQUEST, "聊天请求格式或字段无效。") from None
 
 
 def read_session_query(request: Request) -> SessionQuery:
     try:
-        if len(request.query_params.getlist("sessionId")) != 1:
+        query_params = request.query_params
+        session_ids = query_params.getlist("sessionId")
+        session_count = len(session_ids)
+        if session_count != 1:
             raise ValueError
-        return SessionQuery.model_validate({"sessionId": request.query_params.get("sessionId")})
+        session_id = query_params.get("sessionId")
+        query = SessionQuery.model_validate({"sessionId": session_id})
+        return query
     except (ValidationError, ValueError):
         raise ApiError(400, ErrorCode.INVALID_REQUEST, "sessionId 无效。") from None

@@ -51,13 +51,13 @@ uv run --locked python -m dokkan_agent.main --config backend/config/local.json
 | `infrastructure/tool`                   | Skill 工具与 echo 示例适配                  | 工具必须静态注册                    |
 | `application/conversation`              | 会话锁、去重、模型选择和提交编排            | 不依赖 SQL、HTTPX 或 FastAPI        |
 | `infrastructure/memory`                 | SQLite 版本迁移、JSON 和短事务仓储          | 不持有模型执行期间的写事务          |
-| `infrastructure/provider`               | HTTPX、SSE、工具片段与模型事件归一化        | 不选择 Skill 或保存历史             |
+| `infrastructure/provider`               | OpenAI SDK、工具片段与模型事件归一化        | 不选择 Skill 或保存历史             |
 
 包入口与核心契约均有中文说明。没有加入审批、Policy、多 Agent 或数据采集模块。完整前后端链路和断点说明见 [HTTP 运行流程](docs/http-runtime.md)。
 
 配置保留既有 `server/storage/provider/agents/skillsDirectory`；新增可选 `runtime`，见开发示例。模型 Profile 禁止包含 `skillIds`；Skill 使用单独的全局目录。`historyLimit` 仍为消息条数，省略时沿用旧版不限制条数的行为；设置后按完整轮次截取，不转换为轮次数。
 
-Provider 通过 `baseUrl + /chat/completions` 访问兼容流式协议。可选 `connectTimeoutSeconds:10`、`readTimeoutSeconds:60`、`maxAttempts:2`（上限 3）；只在当前模型调用尚未输出事件时重试网络/429/5xx。Profile 可配置 `supportsTools:false` 声明不支持工具，Agent 会明确报能力错误，不能借此跳过业务流程；默认 true。不支持 stream_options 的服务可设置 `includeStreamUsage:false`，未知用量保持缺失。配置全来自 JSON；HTTPX 不读取环境代理。
+Provider 使用官方 `openai` Python SDK 的 `AsyncOpenAI`，通过 `baseUrl + /chat/completions` 访问兼容流式协议。SDK 复用应用显式创建的 HTTPX 连接池；禁用 SDK 自带重试，由适配层统一控制首事件前的重试，避免双重重试。可选 `connectTimeoutSeconds:10`、`readTimeoutSeconds:60`、`maxAttempts:2`（上限 3）；只在当前模型调用尚未输出事件时重试网络/429/5xx。Profile 可配置 `supportsTools:false` 声明不支持工具，Agent 会明确报能力错误，不能借此跳过业务流程；默认 true。不支持 stream_options 的服务可设置 `includeStreamUsage:false`，未知用量保持缺失。配置全来自 JSON；HTTPX 不读取环境代理。
 
 成功请求跨重启重放正文、reasoning 和 usage；相同 ID 不同输入返回冲突。失败同输入最多执行三次（请求级 attempt，与 Provider 单次连接重试不同）；启动将遗留 running 标记为 interrupted。没有接外部写工具，因此有限重试不会重复业务写入。切换模型沿用 sessionId，不创建新会话。
 
@@ -67,13 +67,15 @@ Provider 通过 `baseUrl + /chat/completions` 访问兼容流式协议。可选 
 
 ```powershell
 uv run --locked ruff check .
-uv run --locked ruff format --check .
+uv run --locked python scripts/check_code_style.py
 uv run --locked mypy
 uv run --locked pytest -q
 uv build
 ```
 
-测试只读取脱敏示例配置，在 pytest 临时目录生成旧版 SQLite，不访问实际 `data/` 或模型。Ruff 负责格式与静态规则，mypy 负责严格类型检查；架构测试限制领域层导入和 HTTP 越层依赖。
+测试只读取脱敏示例配置，在 pytest 临时目录生成旧版 SQLite，不访问实际 `data/` 或模型。Ruff 负责通用静态规则，mypy 负责严格类型检查；架构测试限制领域层导入和 HTTP 越层依赖，并执行自定义代码规范检查。
+
+代码规范见 [代码规范](docs/code-style.md)：自定义函数最多 4 个业务参数（不含 `self`/`cls`），定义和调用的参数列表单行；被使用的调用结果先赋值给变量；禁止链式方法调用。检查覆盖 `src`、`tests`、`examples`、`scripts`。Ruff formatter 会将长参数列表重新折行，与本项目规范冲突，因此不再作为验收命令；不要对 backend 整库运行 `ruff format`。
 
 API 及 SSE 冻结契约见 [HTTP 契约](docs/http-contract.md)，存储和回退约定见 [存储契约](docs/storage-contract.md)。Skill 格式按 [Agent Skills specification](https://agentskills.io/specification) 解析。可运行确定性演示：
 
