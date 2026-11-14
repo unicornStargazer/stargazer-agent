@@ -48,6 +48,10 @@ T02 提供版本化 DDL，T06 已实现完整仓储、会话锁、重放和恢�
 
 ## 切换与回退边界
 
-默认 npm 后端入口已启动 Python，省略 `--config` 时读取仓库根 `config/stargazer-agent.json`；启动会迁移该配置选中的库，并非只读兼容。开发验证使用 `backend/config/development.example.json` 派生的独立配置与数据库，避免误写实际会话库。升级已有库前必须停写，使用 SQLite 备份能力创建一致副本，先在副本升级和验收；WAL 活跃时不能只复制主文件。不要让其他进程并行写同一个实际库。
+默认 npm 后端入口已启动 Python，后端根默认为 `repo/backend`，省略 `--config` 时读取 `backend/config/stargazer-agent.json`；缺少新配置会报错，没有隐式旧配置回退。`--config` 相对路径与 `storage.databasePath` 均相对于后端根，与 cwd 和配置文件目录无关。启动会迁移该配置选中的库，并非只读兼容。
+
+默认示例的 `data/stargazer-agent.sqlite` 指向 `backend/data/stargazer-agent.sqlite`。当前本地配置迁至 `backend/config` 时改用 `../data/stargazer-agent.sqlite` 继续指向仓库根原库，没有搬动实际 `data/`；不要用新默认值覆盖这一迁移路径。开发验证使用 `backend/config/development.example.json` 派生的独立配置，数据库值为 `data/development.sqlite`，实际位于 `backend/data/development.sqlite`，避免误写实际会话库。
+
+升级已有库前必须停写，使用 SQLite 备份能力创建一致副本，先在副本升级和验收；WAL 活跃时不能只复制主文件。不要让其他进程并行写同一个实际库。
 
 旧 TS 后端不再随当前源码提供，不能承诺通过 npm 直接回退。当前增量仅添加可空列和独立表，但这不构成旧客户端回退保证。若确需回退，须另行保留并验证兼容的历史版本；否则使用升级前备份，先导出升级后增量，明确恢复备份会舍弃哪些写入。没有自动降级 DDL，不执行 DROP TABLE 或删除真实数据。

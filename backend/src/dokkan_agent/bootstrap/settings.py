@@ -140,18 +140,24 @@ class LoadedSettings:
     """带明确路径基准的配置快照；路径解析不创建目录或访问真实数据库。"""
 
     settings: Settings
-    project_root: Path
+    backend_root: Path
     configuration_path: Path
 
-    def resolve_project_path(self, value: str) -> Path:
-        """绝对路径保持语义，相对路径锚定项目根而非进程工作目录。"""
-        path = self.project_root / value
+    @property
+    def static_directory(self) -> Path:
+        """前端与 backend 为同级部署目录；不随配置文件所在目录变化。"""
+        path = self.backend_root.parent / "web/dist"
+        return path
+
+    def resolve_backend_path(self, value: str) -> Path:
+        """绝对路径保持语义，相对路径锚定后端根而非启动目录或配置目录。"""
+        path = self.backend_root / value
         resolved = path.resolve()
         return resolved
 
     @property
     def database_path(self) -> Path:
-        path = self.resolve_project_path(self.settings.storage.database_path)
+        path = self.resolve_backend_path(self.settings.storage.database_path)
         return path
 
     @property
@@ -159,7 +165,7 @@ class LoadedSettings:
         value = self.settings.skills_directory
         if not value:
             return None
-        path = self.resolve_project_path(value)
+        path = self.resolve_backend_path(value)
         return path
 
 
@@ -167,9 +173,9 @@ class ConfigurationError(ValueError):
     """启动配置无效；消息只含字段位置和错误类别，不含配置原文或密钥。"""
 
 
-def load_settings(project_root: Path, configuration_path: Path | None = None) -> LoadedSettings:
-    """读取、校验文件并返回快照；失败抛脱敏异常，不产生数据库或网络副作用。"""
-    root = project_root.resolve()
+def load_settings(backend_root: Path, configuration_path: Path | None = None) -> LoadedSettings:
+    """以后端根读取配置，不回退旧配置；失败抛脱敏异常，无数据库或网络副作用。"""
+    root = backend_root.resolve()
     if configuration_path is None:
         configuration_path = Path("config/stargazer-agent.json")
     requested_path = root / configuration_path

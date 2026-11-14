@@ -1,2 +1,3 @@
 /data/
 /config/local*.json
+/config/stargazer-agent.json

@@ -215,7 +215,9 @@ async def test_static_files_cannot_escape_and_api_never_returns_html(tmp_path: P
     def handler_3(request: httpx.Request) -> httpx.Response:
         response = httpx.Response(500)
         return response
-    app = make_app(tmp_path, configuration, handler_3)
+    backend_root = tmp_path / 'backend'
+    backend_root.mkdir()
+    app = make_app(backend_root, configuration, handler_3)
     router = app.router
     lifespan_context = router.lifespan_context(app)
     async with lifespan_context:

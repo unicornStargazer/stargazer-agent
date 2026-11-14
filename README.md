@@ -20,11 +20,17 @@ Python 依赖环境位于 `backend/.venv`。Node.js 不再用于运行后端。
 
 ## 配置
 
-Python 默认读取仓库根目录的 `config/stargazer-agent.json`。已有配置可继续使用，不要用示例覆盖自己的密钥或数据库路径。首次配置请参照 [服务端配置](docs/configuration.md) 创建文件，填写 `provider.apiKey`、`provider.baseUrl` 与 `agents.profiles`，默认监听地址使用 `127.0.0.1:3000`。
+Python 默认服务根为 `BACKEND_ROOT = repo/backend`，默认读取 `backend/config/stargazer-agent.json`。首次配置在仓库根目录执行以下命令，再填写 `provider.apiKey`、`provider.baseUrl` 与 `agents.profiles`；已有配置不要覆盖：
 
-模型、密钥、端口、数据库路径和 Skill 目录均来自 JSON，不读取旧的 `OPENAI_*`、`HOST`、`PORT` 或 `STARGAZER_*` 环境变量。相对配置路径、`storage.databasePath` 和 `skillsDirectory` 都以**仓库根目录**为基准，而非启动命令所在目录。
+```powershell
+Copy-Item backend/config/stargazer-agent.example.json backend/config/stargazer-agent.json
+```
 
-注意旧根示例中的 `examples/skills` 仍是历史 TS 格式，不能直接作为 Python Skill 目录。可省略 `skillsDirectory`，或使用 `backend/examples/skills` 验证演示 Skill；格式见 [业务 Skill](docs/skills.md)。真实配置不要提交到 Git。
+默认示例监听 `127.0.0.1:3000`，使用 `data/stargazer-agent.sqlite` 和 `examples/skills`，分别指向 `backend/data/stargazer-agent.sqlite` 与 Python 演示 Skill 目录 `backend/examples/skills`。根目录旧配置示例不再提供；**没有隐式旧配置回退**，缺少新配置会报错，不会自动读取根 `config/stargazer-agent.json`。
+
+模型、密钥、端口、数据库路径和 Skill 目录均来自 JSON，不读取旧的 `OPENAI_*`、`HOST`、`PORT` 或 `STARGAZER_*` 环境变量。`--config` 相对路径、`storage.databasePath` 和 `skillsDirectory` 都以**后端根目录**为基准，与 cwd 和配置文件所在目录无关。CLI 使用 `--backend-root` 显式指定后端根；旧 `--project-root` 是同义兼容参数，语义也是后端根，不是仓库根。详见 [服务端配置](docs/configuration.md)。
+
+当前本地配置迁至 `backend/config` 后，数据库路径使用 `../data/stargazer-agent.sqlite` 继续指向仓库根的原库，不搬动实际 `data/`。已有用户迁移时同样应核对路径，不要直接套用新库默认值。Skill 格式见 [业务 Skill](docs/skills.md)；真实配置不要提交到 Git。
 
 ## 启动 Web 工作台
 
@@ -44,7 +50,7 @@ npm run web:dev
 npm run web
 ```
 
-该命令先执行 `build:web` 生成 `web/dist`，再运行 `npm start` 启动 Python，页面与 API 同源。使用默认端口配置时访问 `http://127.0.0.1:3000`。
+该命令先执行 `build:web` 生成 `web/dist`，再运行 `npm start` 启动 Python，页面与 API 同源。静态目录固定由 `backend_root.parent / "web" / "dist"` 定位，不随配置文件位置变化；独立部署保留 `<deployment>/backend` 和 `<deployment>/web/dist` 的同级布局。使用默认端口配置时访问 `http://127.0.0.1:3000`。
 
 也可以拆开执行：
 
@@ -59,7 +65,7 @@ npm start
 uv run --project backend --locked python -m dokkan_agent.main
 ```
 
-需要独立开发配置时，可使用 [后端 README](backend/README.md) 中的 `--config backend/config/local.json` 流程。该开发示例监听 **3001**，使用独立数据库；它不会自动改变 Vite 的 **3000** 代理，应先构建前端并访问 3001 上的同源页面。
+需要独立开发配置时，可使用 [后端 README](backend/README.md) 中的 `--config config/local.json` 流程。该开发示例监听 **3001**，使用独立数据库；它不会自动改变 Vite 的 **3000** 代理，应先构建前端并访问 3001 上的同源页面。
 
 启动会初始化配置指定的 SQLite 数据库，但不会主动探测远程模型。用户发送消息后才可能产生模型请求与费用。
 
@@ -106,12 +112,11 @@ backend/
 │   ├── application/     会话用例与有界 AgentRunner
 │   └── infrastructure/  Provider、SQLite、Skill 与 Tool 适配
 ├── tests/               Python 单元、契约与架构测试
-├── config/              脱敏开发配置示例
+├── config/              默认配置与脱敏默认/开发示例
 └── docs/                当前后端设计与运行契约
 web/
 ├── vite.config.ts       Vue 构建与开发 API 代理
 └── src/                 Vue 组件、Pinia 状态与 HTTP/SSE 客户端
-config/                  默认服务端 JSON 配置位置
 ```
 
 旧根 `src/`、`test/`、`tsconfig.json`、`tsconfig.build.json` 和 `vitest.config.ts` 不再作为当前后端源码、测试或构建入口；前端仍保留 Vue/TypeScript 工具链。

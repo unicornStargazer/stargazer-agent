@@ -8,12 +8,14 @@
 
 ```powershell
 uv sync --project backend --locked
+# 仅首次配置时复制；已有配置不要覆盖，启动前填写密钥与模型。
+Copy-Item backend/config/stargazer-agent.example.json backend/config/stargazer-agent.json
 npm start
 # 等价的 Python 入口：
 # uv run --project backend --locked python -m dokkan_agent.main
 ```
 
-默认配置为 `config/stargazer-agent.json`，端口沿用 3000；已有文件不要覆盖。配置中的旧 TS Skill 目录需按 [配置文档](../docs/configuration.md) 调整为兼容目录或省略。前端开发使用 `npm run dev` 或 `npm run web:dev`，同时启动 Python 与 Vite；单端口页面使用 `npm run web` 先构建再启动。
+默认服务根为 `BACKEND_ROOT = repo/backend`，默认配置为该根下的 `config/stargazer-agent.json`（仓库路径 `backend/config/stargazer-agent.json`）。默认示例 `backend/config/stargazer-agent.example.json` 使用端口 `3000`、`data/stargazer-agent.sqlite` 和 `examples/skills`，路径值不含 `backend/` 前缀。根旧配置示例不再提供；**没有隐式旧配置回退**，缺少新配置会报错，不会自动读取仓库根的旧配置。已有配置迁移见 [配置文档](../docs/configuration.md#已有配置迁移)。前端开发使用 `npm run dev` 或 `npm run web:dev`，同时启动 Python 与 Vite；单端口页面使用 `npm run web` 先构建再启动。
 
 需要使用 3001 和独立数据库验证时，从仓库根目录切换到 backend：
 
@@ -22,16 +24,30 @@ cd D:\stargazer-agent\backend
 uv sync --locked
 Copy-Item config/development.example.json config/local.json
 # 编辑 config/local.json，填写 provider.apiKey、provider.baseUrl 和 agents.profiles 中的 model。
-uv run --locked python -m dokkan_agent.main --config backend/config/local.json
+uv run --locked python -m dokkan_agent.main --config config/local.json
 ```
 
 先在仓库根运行 `npm run build:web`，再启动后端，浏览器打开 `http://127.0.0.1:3001` 即可使用同源页面和 `/api`。配置复制只需首次执行，已有 local.json 时直接编辑，避免覆盖自己的配置。示例使用明确标记的演示 Skill，不代表正式 Dokkan Skill。
 
-启动会创建并迁移配置指定的 `backend/data/development.sqlite`，不主动发送模型请求；用户发消息后才调用模型。`--config` 相对路径以**仓库根目录**为基准，省略时读取现有 `config/stargazer-agent.json`。迁移验证期间务必使用独立配置和数据库，避免其他进程同时写实际会话库。本地配置已忽略，不要把真实密钥放入示例。
+开发示例中的 `storage.databasePath: "data/development.sqlite"` 与 `skillsDirectory: "examples/skills"` 均相对于后端根，实际数据库为 `backend/data/development.sqlite`。启动会创建并迁移该库，不主动发送模型请求；用户发消息后才调用模型。`--config` 相对路径、`storage.databasePath` 和 `skillsDirectory` 一律以**后端根目录**为基准，与 cwd 和配置文件目录无关。迁移验证期间务必使用独立配置和数据库，避免其他进程同时写实际会话库。本地配置已忽略，不要把真实密钥放入示例。
+
+在仓库根启动同一份独立配置时使用：
+
+```powershell
+uv run --project backend --locked python -m dokkan_agent.main --config config/local.json
+```
+
+当前本地默认配置迁至 `backend/config` 后，数据库路径为 `../data/stargazer-agent.sqlite`，继续指向仓库根原库；没有搬动实际 `data/`。新默认示例仍使用 `data/stargazer-agent.sqlite`，不要用它覆盖已有路径。
 
 工程依赖位于 `backend/.venv`，不用仓库旧 `.venv`。开发网络直连 PyPI 曾超时，因此 `pyproject.toml` 显式使用清华 PyPI 镜像，`uv.lock` 记录确切版本、下载来源与哈希；没有以环境变量覆盖应用配置。
 
-源码运行时自动定位仓库根目录；如果独立安装 wheel，需通过 `--project-root D:\stargazer-agent` 显式指定配置和数据的根目录，不能把安装目录或启动目录误当成项目目录。
+源码运行时自动定位 `repo/backend`；如果独立安装 wheel，需通过 `--backend-root` 显式指定后端服务根，不能把安装目录或启动目录误当成服务根。例如在仓库根执行：
+
+```powershell
+uv run --project backend --locked python -m dokkan_agent.main --backend-root D:\stargazer-agent\backend --config config/local.json
+```
+
+旧 `--project-root` 是 `--backend-root` 的同义兼容参数，语义同样是**后端根**，不是仓库根。静态目录固定由 `backend_root.parent / "web" / "dist"` 定位，与配置目录无关；独立部署需保留 `<deployment>/backend` 和 `<deployment>/web/dist` 的同级布局。
 
 调试器选择 `backend/.venv/Scripts/python.exe`，启动模块为 `dokkan_agent.main`，参数与上面相同。可依次断点：
 

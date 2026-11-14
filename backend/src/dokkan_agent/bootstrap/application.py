@@ -11,13 +11,13 @@ from dokkan_agent.interfaces.http.app import create_http_app
 
 MODULE_PATH = Path(__file__)
 RESOLVED_MODULE_PATH = MODULE_PATH.resolve()
-PROJECT_ROOT = RESOLVED_MODULE_PATH.parents[4]
+BACKEND_ROOT = RESOLVED_MODULE_PATH.parents[3]
 
 
-def create_app(configuration_path: Path | None = None, project_root: Path = PROJECT_ROOT, *, model_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
-    """校验文件并装配应用；工厂本身无存储/网络副作用，生命周期才迁移指定库。"""
-    loaded = load_settings(project_root, configuration_path)
+def create_app(configuration_path: Path | None = None, backend_root: Path = BACKEND_ROOT, *, model_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    """以后端根解析配置与数据；前端构建目录独立定位，工厂不产生 IO 写入。"""
+    loaded = load_settings(backend_root, configuration_path)
     lifespan = create_lifespan(loaded, model_transport)
-    app = create_http_app(lifespan, loaded.project_root / "web/dist")
+    app = create_http_app(lifespan, loaded.static_directory)
     app.state.configuration = loaded
     return app

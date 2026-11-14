@@ -1,7 +1,7 @@
 {
-  "skillsDirectory": "backend/examples/skills",
+  "skillsDirectory": "examples/skills",
   "server": { "host": "127.0.0.1", "port": 3001 },
-  "storage": { "databasePath": "backend/data/development.sqlite" },
+  "storage": { "databasePath": "data/development.sqlite" },
   "provider": {
     "apiKey": "replace-with-local-key",
     "baseUrl": "https://api.openai.com/v1",

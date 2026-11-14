@@ -1,8 +1,8 @@
 # 模型切换
 
-模型列表只由 Python 服务端加载的 JSON 配置中的 `agents.profiles` 决定，默认文件为仓库根目录的 `config/stargazer-agent.json`，也可通过 `--config` 指定。页面启动后通过 `GET /api/profiles` 获取安全摘要，只能选择已配置的模型，不能提交 API Key、Base URL 或任意模型名。
+模型列表只由 Python 服务端加载的 JSON 配置中的 `agents.profiles` 决定，默认文件为 `backend/config/stargazer-agent.json`，也可通过 `--config config/local.json` 指定；相对路径以默认的 `repo/backend` 后端根为基准，与 cwd 无关。缺少新配置会报错，不隐式回退到根旧配置。页面启动后通过 `GET /api/profiles` 获取安全摘要，只能选择已配置的模型，不能提交 API Key、Base URL 或任意模型名。
 
-根示例列出 `gpt-4.1-mini` 和 `o3`，实际可用模型由你的兼容服务决定。已有配置时直接编辑，不要覆盖凭据。首次创建配置请按 [服务端配置](configuration.md) 填写 `provider.apiKey`、`provider.baseUrl` 与模型列表，并省略根示例中指向旧 TS Skill 的 `skillsDirectory`，或改为兼容的 Python Skill 目录。以下仅为 `agents` 片段，不是完整启动配置。
+以下片段以 `gpt-4.1-mini` 和 `o3` 演示多模型配置，实际可用模型由你的兼容服务决定，不代表默认示例承诺提供这些模型。已有配置时直接编辑，不要覆盖凭据。首次创建配置请按 [服务端配置](configuration.md) 从 `backend/config/stargazer-agent.example.json` 复制并填写 `provider.apiKey`、`provider.baseUrl` 与模型列表；其中 `skillsDirectory: "examples/skills"` 相对于后端根，指向 Python 演示 Skill。以下仅为 `agents` 片段，不是完整启动配置。
 
 ```json
 {

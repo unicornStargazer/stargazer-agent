@@ -1,0 +1,16 @@
+{
+  "skillsDirectory": "examples/skills",
+  "server": { "host": "127.0.0.1", "port": 3000 },
+  "storage": { "databasePath": "data/stargazer-agent.sqlite" },
+  "provider": {
+    "apiKey": "replace-with-local-key",
+    "baseUrl": "https://api.openai.com/v1",
+    "includeStreamUsage": true
+  },
+  "agents": {
+    "defaultProfileId": "default",
+    "profiles": [
+      { "id": "default", "name": "默认模型", "model": "configure-your-model", "historyLimit": 12 }
+    ]
+  }
+}

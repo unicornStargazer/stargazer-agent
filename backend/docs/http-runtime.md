@@ -2,7 +2,7 @@
 
 页面通过 `/api/chat/stream` 发送消息；FastAPI 校验后交给 ConversationService。会话用例锁定当前 session、检查请求 ID、选择模型并加载历史，再交给 AgentRunner。Runner 驱动模型与 Skill Tool 循环。文字、公开推理和用量及时流向页面，完整结果落库成功后才发送 `done`。
 
-生产构建页面由 Python 提供，页面和 API 同源。根 `npm start` / `npm run start:server` 启动 Python，`npm run dev` / `npm run web:dev` 同时启动 Python 与 Vite；`npm run web` 先构建前端再启动 Python。默认读取仓库根 `config/stargazer-agent.json`，使用 3000 与 Vite 5173 的 `/api` 代理对接。独立开发示例使用 3001 和独立数据库，需显式 `--config backend/config/local.json`，构建前端后访问 3001 同源页面；不会自动改变现有 Vite 代理。配置中的相对路径均基于仓库根，详见 [服务端配置](../../docs/configuration.md)。
+生产构建页面由 Python 提供，页面和 API 同源。根 `npm start` / `npm run start:server` 启动 Python，`npm run dev` / `npm run web:dev` 同时启动 Python 与 Vite；`npm run web` 先构建前端再启动 Python。默认服务根为 `BACKEND_ROOT = repo/backend`，读取 `backend/config/stargazer-agent.json`，使用 3000 与 Vite 5173 的 `/api` 代理对接。缺少新配置会报错，不隐式回退到根旧配置。独立开发示例使用 3001 和独立数据库，需显式 `--config config/local.json`，构建前端后访问 3001 同源页面；不会自动改变现有 Vite 代理。`--config` 相对路径、`storage.databasePath` 和 `skillsDirectory` 均基于后端根，与 cwd 或配置目录无关。`--backend-root` 可显式指定后端根，旧 `--project-root` 是同义兼容参数，不再表示仓库根。完整命令与迁移说明见 [服务端配置](../../docs/configuration.md)。
 
 ## 运行时序
 
@@ -75,6 +75,6 @@ sequenceDiagram
 - 收到 finish_reason 后继续读取尾部 usage。`[DONE]` 或带结束原因的干净 EOF 才结束调用；无结束原因、残缺 SSE 或工具 JSON 都失败。单次流限制 4 MiB，单事件 1 Mi 字符，每批最多 128 个工具片段索引，工具参数最多 64000 字符；执行预算还会进一步收紧。
 - Provider 默认连接超时 10 秒、读取超时 60 秒、最多两次连接尝试。当前调用未输出领域事件时才重试网络/429/5xx；输出后失败不自动重新生成答案。
 - 客户端断开向上游传播取消。准备完成但响应尚未接管、流未开始、流中断等路径都负责关闭租约；失败清理也无法写库时，下次启动收敛 running。
-- 静态文件只来自 `web/dist`，真实路径不能逃逸；不存在的 `/api` 不回退成 HTML。普通响应与 SSE 复用安全头。
+- 静态文件只来自 `backend_root.parent / "web" / "dist"`，与配置目录无关；独立部署布局为 `<deployment>/backend` 和 `<deployment>/web/dist`。真实路径不能逃逸，不存在的 `/api` 不回退成 HTML。普通响应与 SSE 复用安全头。
 
 协议细节见 [HTTP 契约](http-contract.md)，事务和回退见 [存储契约](storage-contract.md)。启动与配置命令见 [后端 README](../README.md)。这批验证不使用真实模型密钥或领域数据服务，不能替代真实模型选 Skill 评估。

@@ -30,17 +30,17 @@ Never invent an order status or claim access to an unregistered order service.
 
 ## 配置与启用
 
-Python 默认配置为仓库根 `config/stargazer-agent.json`，也可用 `--config` 指定。以下是配置片段，需合并到包含 `server/storage/provider/agents` 的完整 JSON 中：
+Python 默认配置为 `backend/config/stargazer-agent.json`，也可用 `--config config/local.json` 指定后端根下的其他文件；缺少新配置会报错，不隐式回退到旧根配置。以下是配置片段，需合并到包含 `server/storage/provider/agents` 的完整 JSON 中：
 
 ```json
 {
-  "skillsDirectory": "backend/examples/skills"
+  "skillsDirectory": "examples/skills"
 }
 ```
 
-该路径以**仓库根目录**为基准，不随当前工作目录变化。`backend/examples/skills` 提供明确标记的 `material-analysis-demo`，不连接游戏事实查询服务。自建目录时，将值换成自己的兼容目录；不需要 Skill 时省略 `skillsDirectory`。
+该路径以**后端根目录**为基准，默认 `BACKEND_ROOT = repo/backend`，不随 cwd 或配置文件所在目录变化。因此 `examples/skills` 指向 `backend/examples/skills`，其中提供明确标记的 `material-analysis-demo`，不连接游戏事实查询服务。`--backend-root` 可覆盖后端根；旧 `--project-root` 是同义兼容参数，含义也为后端根。自建目录时，将值换成自己的兼容目录；不需要 Skill 时省略 `skillsDirectory`。
 
-**根 `examples/skills` 仍保留旧 TS 格式**，例如只有展示用 `name`、缺少 `description`，不能直接给 Python 加载。根配置示例引用该目录时，必须手动省略或改为兼容目录；本说明不修改这些历史示例文件。
+**根 `examples/skills` 仍是旧 TS 格式**，不能直接给 Python 加载；它与后端根下的 `examples/skills` 不是同一目录。默认和开发示例均使用后者，不再引用根旧目录；根旧配置示例不再提供。
 
 配置与目录修改后重启 Python 服务；格式无效会使启动失败。运行中部署文件改变会返回 `SKILL_CHANGED`，需检查并重启以重新发现快照。
 
