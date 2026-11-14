@@ -1,6 +1,6 @@
 # Web 协议迁移契约
 
-依据现有 `src/http/api-routes.ts`、`request-validation.ts`、`error-mapper.ts`、`src/chat/models.ts` 和 `web/src/services/chat-api.ts` 冻结。T08 已实现以下业务接口；默认 npm 入口切换仍留在 T10。
+协议沿用旧 TypeScript 后端与 Vue 客户端约定，当前由 `backend/src/dokkan_agent/interfaces/http/` 实现，与 `web/src/services/chat-api.ts` 对接。旧根 `src/http/`、`src/chat/` 仅为迁移来源，不再是当前代码入口；默认 npm 后端入口已启动 Python，启动方式见 [后端 README](../README.md)。
 
 ## 请求与路由
 

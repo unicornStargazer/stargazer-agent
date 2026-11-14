@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .codex/
+.claude/
 .idea/
 docs/*
 !docs/backend-runtime-flow.md
@@ -236,3 +237,4 @@ config/stargazer-agent.json
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal
+

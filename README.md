@@ -1,191 +1,123 @@
 # Stargazer Agent
 
-Stargazer Agent 是一个可快速运行的 TypeScript 文本对话 Agent，提供浏览器工作台和 CLI 两种入口。Web 服务使用 SQLite 保存会话历史，并通过 OpenAI 兼容的 `/chat/completions` 接口调用模型。
+Stargazer Agent 由 **Python 后端 + Vue/TypeScript 前端**组成。后端使用 FastAPI 提供 HTTP/SSE 接口，使用 SQLite 保存会话与请求状态，通过 OpenAI 兼容的 `/chat/completions` 接口调用模型；前端提供浏览器聊天工作台。
 
-当前实现了连续文本对话、Profile 化系统提示、SQLite 会话记忆、流式文本输出，以及受控 Tool 调用的核心编排。默认不注册任何 Tool；不会开放文件系统、命令执行或网络访问等高风险能力。Policy、审批、长期记忆、多 Agent 和复杂运行时仍不在当前范围内。
+当前支持连续文本对话、模型 Profile 切换、流式正文与公开 reasoning、Token 用量、请求幂等，以及有界的 Agent/Tool 循环。业务 Skill 使用渐进式披露：先提供目录摘要，再按需激活正文和读取单份资源。默认只注册受限的 Skill 工具，不提供任意文件读取、Shell 或脚本执行能力；尚未接入 Dokkan 数据服务。
 
-## 环境
+## 环境与安装
 
-- Node.js 20.19+，推荐 Node.js 22 LTS；Node.js 21 使用构建兼容层。
-- npm
+- Python 3.12+、[uv](https://docs.astral.sh/uv/)
+- Node.js 20.19+，推荐 Node.js 22 LTS，以及 npm（用于 Vue/TypeScript 前端）
 
-## 安装与开发
+在仓库根目录执行：
 
 ```powershell
 npm install
-npm run format:check
-npm run lint
-npm run typecheck
-npm test
+uv sync --project backend --locked
 ```
+
+Python 依赖环境位于 `backend/.venv`。Node.js 不再用于运行后端。
 
 ## 配置
 
-> 当前版本仅读取 `config/stargazer-agent.json`，不再读取模型、密钥或端口相关的环境变量。请参阅 [服务端配置](docs/configuration.md) 和 [模型切换](docs/model-switching.md)。以下环境变量示例仅适用于历史版本。
+Python 默认读取仓库根目录的 `config/stargazer-agent.json`。已有配置可继续使用，不要用示例覆盖自己的密钥或数据库路径。首次配置请参照 [服务端配置](docs/configuration.md) 创建文件，填写 `provider.apiKey`、`provider.baseUrl` 与 `agents.profiles`，默认监听地址使用 `127.0.0.1:3000`。
 
-历史环境变量配置如下，仅供迁移参考，不再被当前服务读取。
+模型、密钥、端口、数据库路径和 Skill 目录均来自 JSON，不读取旧的 `OPENAI_*`、`HOST`、`PORT` 或 `STARGAZER_*` 环境变量。相对配置路径、`storage.databasePath` 和 `skillsDirectory` 都以**仓库根目录**为基准，而非启动命令所在目录。
 
-```powershell
-$env:OPENAI_API_KEY = "你的密钥"
-$env:OPENAI_MODEL = "gpt-4.1-mini"
-# 可选，默认 https://api.openai.com/v1
-$env:OPENAI_BASE_URL = "https://api.openai.com/v1"
-# 可选，默认 true；上游不支持 stream_options 时设为 false
-$env:OPENAI_STREAM_INCLUDE_USAGE = "true"
-# 可选，为所有 Web 会话设置统一系统提示
-$env:STARGAZER_SYSTEM_PROMPT = "回答要简洁"
-# 可选，默认 ./data/stargazer-agent.sqlite
-$env:STARGAZER_DATABASE_PATH = "D:\\agent-data\\stargazer-agent.sqlite"
-# 可选，与 STARGAZER_DATABASE_PATH 二选一，默认 ./data
-$env:STARGAZER_DATA_DIR = "D:\\agent-data"
-# 可选：受控的 Agent Profile 列表。浏览器只会看到 id、名称和模型名。
-# API Key 与 Base URL 仍只从上面的服务端环境变量读取。
-$env:STARGAZER_AGENT_PROFILES = '[{"id":"concise","name":"简洁助手","model":"gpt-4.1-mini","systemPrompt":"回答要简洁","historyLimit":12},{"id":"detailed","name":"详细助手","model":"gpt-4.1-mini","systemPrompt":"给出必要的推理和示例","historyLimit":24}]'
-```
+注意旧根示例中的 `examples/skills` 仍是历史 TS 格式，不能直接作为 Python Skill 目录。可省略 `skillsDirectory`，或使用 `backend/examples/skills` 验证演示 Skill；格式见 [业务 Skill](docs/skills.md)。真实配置不要提交到 Git。
 
-## Web 工作台
+## 启动 Web 工作台
 
-开发时同时启动 Node API 和 Vite 开发服务器：
+### 前后端开发
+
+在仓库根目录执行：
 
 ```powershell
 npm run web:dev
 ```
 
-浏览器访问 `http://127.0.0.1:5173`。Vite 会把 `/api` 请求代理到 `http://127.0.0.1:3000`，修改 Vue 组件后可立即热更新。
+该命令通过 concurrently 同时运行 `npm run start:server`（Python API）和 Vite。浏览器访问 `http://127.0.0.1:5173`；Vue 组件支持热更新，Vite 将 `/api` 代理到 `http://127.0.0.1:3000`。配合该命令时，请保持 JSON 中 `server.port` 为 `3000`。
 
-需要用单端口验证生产构建时运行：
+### 单端口构建页面
 
 ```powershell
 npm run web
 ```
 
-该命令先生成 `web/dist`，再启动同源 Web 服务。浏览器访问 `http://127.0.0.1:3000`；可通过 `HOST` 和 `PORT` 环境变量修改监听地址和端口。
+该命令先执行 `build:web` 生成 `web/dist`，再运行 `npm start` 启动 Python，页面与 API 同源。使用默认端口配置时访问 `http://127.0.0.1:3000`。
 
-页面提供流式回复、多会话导航、会话搜索与重命名、Markdown 导出、安全 Markdown 与代码块展示、复制、失败重试和移动端布局。浏览器保存会话列表和页面消息，并从服务端恢复已知会话的 SQLite 历史；删除会话时会同时清除两侧记录。
-
-Profile 由服务端环境变量 `STARGAZER_AGENT_PROFILES` 管理。未设置时自动使用与既有 `OPENAI_MODEL`、`STARGAZER_SYSTEM_PROMPT` 相同的默认 Profile。工作台切换 Profile 会新建会话；服务端也会把 Profile 标识持久化到 SQLite，拒绝把已有会话改绑到另一个 Profile。
-
-## 业务 Skill
-
-设置 `STARGAZER_SKILLS_DIR` 后，目录的每个一级子目录都可以直接承接为一个业务 Agent。每个子目录中的 `SKILL.md` 会被加载成一个可在工作台选择的 Profile，首次发送消息后会与会话绑定。
-
-```powershell
-$env:STARGAZER_SKILLS_DIR = ".\examples\skills"
-```
-
-```text
-examples/skills/
-└── order-support/
-    └── SKILL.md
-```
-
-```md
----
-name: Order Support
----
-
-You are an order support assistant.
-Never invent an order status.
-```
-
-`model` 和 `historyLimit` 是可选字段，前者默认使用 `OPENAI_MODEL`。Skill 文件只接受 `name`、`model` 和 `historyLimit` 三个元数据字段；正文是系统提示。Skill 不会自动获得工具权限，仍需由服务端通过 `ToolRegistry` 显式注册。
-
-构建后运行 Web 服务：
+也可以拆开执行：
 
 ```powershell
 npm run build
 npm start
 ```
 
-## CLI
-
-发送单条消息：
+`build` 仅构建前端，不编译旧 TS 后端。`dev` 调用 `web:dev`，同时启动 Python API 与 Vite，不是旧 CLI。`start` 和 `start:server` 执行以下 Python 启动命令，不表示 Python 自动重载：
 
 ```powershell
-npm run dev -- chat --message "请用三点解释 TypeScript 的 async/await"
+uv run --project backend --locked python -m dokkan_agent.main
 ```
 
-进入交互式会话：
+需要独立开发配置时，可使用 [后端 README](backend/README.md) 中的 `--config backend/config/local.json` 流程。该开发示例监听 **3001**，使用独立数据库；它不会自动改变 Vite 的 **3000** 代理，应先构建前端并访问 3001 上的同源页面。
+
+启动会初始化配置指定的 SQLite 数据库，但不会主动探测远程模型。用户发送消息后才可能产生模型请求与费用。
+
+## 模型、Skill 与 Tool
+
+- 模型列表来自 `agents.profiles`，浏览器只获取 `id/name/model` 安全摘要。切换模型保留当前会话与历史，见 [模型切换](docs/model-switching.md)。
+- Skill 由 JSON 的 `skillsDirectory` 指定，全局独立于模型，不生成模型 Profile。每条消息先提供 L1 摘要，按需加载 L2 正文和 L3 资源，见 [业务 Skill](docs/skills.md)。
+- 正式注册工具为 `activate_skill` 和 `read_skill_resource`；`echo_text` 仅是演示/测试扩展示例，见 [Tool 扩展](docs/tools.md)。Skill 元数据不能授予工具权限。
+
+旧 TypeScript 后端的 `chat` CLI 不再是当前支持入口；不要使用 `npm run dev -- chat ...` 或 `node dist/cli.js`。
+
+## 检查与测试
+
+在仓库根目录执行前端检查：
 
 ```powershell
-npm run dev -- chat --system-prompt "回答要简洁"
+npm run typecheck
+npm test
+npm run build:web
 ```
 
-输入 `/exit` 或 `/quit` 退出。`--model` 和 `--base-url` 覆盖相应环境变量；`--session-id` 区分同一进程内的会话。进程退出后历史会清空。
-
-构建后也可直接运行 CLI：
+`npm test` 和 `npm run typecheck` 仅覆盖 Vue/TypeScript 前端，不验证 Python 后端。后端检查在 `backend` 目录执行：
 
 ```powershell
-npm run build
-node dist/cli.js chat --message "你好"
+cd backend
+uv run --locked ruff check .
+uv run --locked python scripts/check_code_style.py
+uv run --locked mypy
+uv run --locked pytest -q
+uv build
 ```
+
+后端自动测试使用脱敏示例、模拟模型响应和临时 SQLite，不需要真实密钥或付费模型请求。更多说明见 [后端验证](backend/README.md#验证)。
 
 ## 项目结构
 
 ```text
-src/
-├── chat/          消息、模型与会话存储契约、内存替身、ChatAgent 编排
-├── memory/        SQLite 会话存储基础设施实现
-├── providers/     OpenAI 兼容客户端和离线 Fake Model
-├── skills/        SKILL.md 加载与业务 Agent Profile 映射
-├── tools/         Tool 契约、白名单注册表与受控执行边界
-├── cli.ts         命令行参数、环境变量和终端交互
-├── http/          Fastify 路由、SSE、静态资源和请求校验适配
-└── server.ts      后端启动入口与运行时依赖装配
+backend/
+├── src/dokkan_agent/
+│   ├── main.py          Python 服务入口
+│   ├── bootstrap/       JSON 配置、路径基准与依赖装配
+│   ├── interfaces/http/ FastAPI 路由、校验、SSE 与静态页面
+│   ├── domain/          Agent、会话、Skill、Tool 契约
+│   ├── application/     会话用例与有界 AgentRunner
+│   └── infrastructure/  Provider、SQLite、Skill 与 Tool 适配
+├── tests/               Python 单元、契约与架构测试
+├── config/              脱敏开发配置示例
+└── docs/                当前后端设计与运行契约
 web/
-├── index.html         Vite 页面入口
-├── vite.config.ts     Vue 构建、开发服务器和 API 代理
-├── vitest.config.ts   浏览器端测试环境
-└── src/
-    ├── components/    工作台布局与聊天组件
-    ├── composables/   Agent 状态等组合式逻辑
-    ├── services/      Web API 客户端
-    ├── stores/        Pinia 会话状态与异步请求编排
-    ├── styles/        全局样式和设计 token
-    ├── utils/         持久化、Markdown 与通用工具
-    ├── App.vue        工作台根组件
-    └── main.ts        Vue 应用入口
-
-test/
-├── chat/          连续会话与失败边界测试
-├── providers/     模型协议与错误脱敏测试
-└── web.test.ts    Web API 与静态资源服务测试
+├── vite.config.ts       Vue 构建与开发 API 代理
+└── src/                 Vue 组件、Pinia 状态与 HTTP/SSE 客户端
+config/                  默认服务端 JSON 配置位置
 ```
 
-```text
-Web -> ChatAgent -> OpenAICompatibleChatModel -> 模型服务
-       |
-       +-> ConversationStore -> SqliteConversationStore
+旧根 `src/`、`test/`、`tsconfig.json`、`tsconfig.build.json` 和 `vitest.config.ts` 不再作为当前后端源码、测试或构建入口；前端仍保留 Vue/TypeScript 工具链。
 
-CLI -> ChatAgent -> InMemoryConversationStore
-```
+## 文档与运行边界
 
-`chat` 不依赖 HTTP 或数据库，`memory` 只实现会话存储，`providers` 不保存会话，`cli` 不保存密钥。这些边界使后续增加其他模型供应商或存储实现时不会影响对话核心。
+当前后端请从 [后端 README](backend/README.md)、[HTTP 运行流程](backend/docs/http-runtime.md)、[Agent 内核](backend/docs/runtime-core.md)、[HTTP 契约](backend/docs/http-contract.md) 和 [存储契约](backend/docs/storage-contract.md) 阅读。`docs/backend-architecture.md` 与 `docs/backend-runtime-flow.md` 保留为旧 TS 后端历史归档，不能作为当前启动指南。
 
-## Tool 扩展
-
-业务能力通过服务端代码显式注册。模型只能请求已注册的 Tool，不能自行获得任意文件、命令或网络权限。每轮工具调用有默认上限，Tool 的异常和无效参数会转换为本轮模型可处理的结果，最终会话历史只保存用户消息和最终回答。
-
-```ts
-import { ChatAgent } from './src/chat/index.js';
-import { ToolRegistry } from './src/tools/index.js';
-
-const tools = new ToolRegistry([
-  {
-    name: 'lookup_order',
-    description: 'Returns the status for one order number.',
-    parameters: { type: 'object', properties: { orderId: { type: 'string' } } },
-    execute: async (input) => JSON.stringify(await loadOrderStatus(input)),
-  },
-]);
-
-const agent = new ChatAgent({ model, tools });
-```
-
-## 已知边界
-
-- Web 会话持久化限定为单进程 SQLite，不支持多进程共享写入或用户账号隔离。
-- Web 当前只支持文本消息，不包含附件、语音、Tool 调用轨迹或停止生成协议。
-- Web API 会串行处理同一会话的请求，但不自动重试；可在创建 Agent 时设置历史消息窗口。
-
-这些是当前最小可用版本的主动取舍；后续能力应基于真实使用场景逐项加入。
+当前部署为单进程、单 worker SQLite，不提供跨进程锁或用户账号隔离。模型与工具调用在数据库事务外执行；完整回答提交成功后才发送 SSE `done`。升级已有数据库前应先停写并做一致备份，不提供自动降级或旧 TS 后端回退保证。

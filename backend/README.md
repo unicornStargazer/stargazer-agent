@@ -1,10 +1,21 @@
 # Python Agent 后端
 
-当前完成 T01—T08：Skill 渐进式披露、Tool 注册、有界 AgentRunner、SQLite 会话与请求幂等、OpenAI 兼容模型流和 FastAPI 聊天接口。现有 Vue 页面可以直接访问 Python 服务。默认 npm 脚本仍启动原 TypeScript 后端，正式切换在 T10 单独完成；Dokkan 数据服务暂不接入。
+当前默认后端为 Python：提供 Skill 渐进式披露、Tool 注册、有界 AgentRunner、SQLite 会话与请求幂等、OpenAI 兼容模型流和 FastAPI 聊天接口。Vue/TypeScript 前端继续保留；根 npm 的 `start`、`start:server` 启动 Python，`dev` 调用 `web:dev` 同时启动 Python 与 Vite，`build` 只构建前端。Dokkan 数据服务暂不接入。
 
 ## 入口与启动
 
-需要 Python 3.12+ 和 uv。从仓库根目录执行：
+需要 Python 3.12+ 和 uv。在仓库根目录执行默认启动：
+
+```powershell
+uv sync --project backend --locked
+npm start
+# 等价的 Python 入口：
+# uv run --project backend --locked python -m dokkan_agent.main
+```
+
+默认配置为 `config/stargazer-agent.json`，端口沿用 3000；已有文件不要覆盖。配置中的旧 TS Skill 目录需按 [配置文档](../docs/configuration.md) 调整为兼容目录或省略。前端开发使用 `npm run dev` 或 `npm run web:dev`，同时启动 Python 与 Vite；单端口页面使用 `npm run web` 先构建再启动。
+
+需要使用 3001 和独立数据库验证时，从仓库根目录切换到 backend：
 
 ```powershell
 cd D:\stargazer-agent\backend
@@ -16,7 +27,7 @@ uv run --locked python -m dokkan_agent.main --config backend/config/local.json
 
 先在仓库根运行 `npm run build:web`，再启动后端，浏览器打开 `http://127.0.0.1:3001` 即可使用同源页面和 `/api`。配置复制只需首次执行，已有 local.json 时直接编辑，避免覆盖自己的配置。示例使用明确标记的演示 Skill，不代表正式 Dokkan Skill。
 
-启动会创建并迁移配置指定的 `backend/data/development.sqlite`，不主动发送模型请求；用户发消息后才调用模型。`--config` 相对路径以**仓库根目录**为基准，省略时读取现有 `config/stargazer-agent.json`。迁移验证期间务必使用独立配置和数据库，不要让 TS/Python 同时写实际会话库。本地配置已忽略，不要把真实密钥放入示例。
+启动会创建并迁移配置指定的 `backend/data/development.sqlite`，不主动发送模型请求；用户发消息后才调用模型。`--config` 相对路径以**仓库根目录**为基准，省略时读取现有 `config/stargazer-agent.json`。迁移验证期间务必使用独立配置和数据库，避免其他进程同时写实际会话库。本地配置已忽略，不要把真实密钥放入示例。
 
 工程依赖位于 `backend/.venv`，不用仓库旧 `.venv`。开发网络直连 PyPI 曾超时，因此 `pyproject.toml` 显式使用清华 PyPI 镜像，`uv.lock` 记录确切版本、下载来源与哈希；没有以环境变量覆盖应用配置。
 
@@ -33,7 +44,7 @@ uv run --locked python -m dokkan_agent.main --config backend/config/local.json
 
 启动成功后 `/health/live`、`/health/ready` 都返回 200；就绪表示配置、Skill 和数据库已初始化，不代表远程模型实时可用。没有隐含的付费模型探测。
 
-现有 5173 Vite 代理仍指向 3000，本批无需修改；先访问 3001 上的构建页面验证。正式切换时停旧 TS，给 Python 独立配置设 `server.port:3000`，再使用现有 Vite。当前仅支持单 worker，不提供多进程并发保证。
+现有 5173 Vite 代理保持指向 3000，与默认 Python 配置对接；独立开发示例仍使用 3001，应访问 3001 上的构建页面验证。若要用该独立配置配合 Vite，需将其 `server.port` 设为 3000，并用显式 `--config` 单独启动 Python，再启动 Vite；不要同时启动两个占用 3000 的服务。当前仅支持单 worker，不提供多进程并发保证。
 
 ## 职责与依赖
 
@@ -63,7 +74,7 @@ Provider 使用官方 `openai` Python SDK 的 `AsyncOpenAI`，通过 `baseUrl + 
 
 ## 验证
 
-在 `backend` 下执行：
+根目录 `npm test` 和 `npm run typecheck` 只覆盖 Vue/TypeScript 前端。Python 后端在 `backend` 下执行：
 
 ```powershell
 uv run --locked ruff check .
@@ -83,4 +94,4 @@ API 及 SSE 冻结契约见 [HTTP 契约](docs/http-contract.md)，存储和回�
 uv run --locked python examples/progressive_skill_demo.py
 ```
 
-该演示只验证“目录 → 激活正文 → 读取一份资源 → 最终回答”，不调用真实大模型或 Dokkan 数据服务。HTTP 和 Provider 测试使用模拟响应与临时 SQLite，另有实际 3001 启动检查。下一批为 T09 Dokkan Skill 和 T10 默认切换；真实模型的 Skill 选择质量仍需单独评估。
+该演示只验证“目录 → 激活正文 → 读取一份资源 → 最终回答”，不调用真实大模型或 Dokkan 数据服务。HTTP 和 Provider 测试使用模拟响应与临时 SQLite；真实模型的 Skill 选择质量仍需单独评估。默认启动已切换到 Python，旧 TS `chat` CLI 不再是当前支持入口。

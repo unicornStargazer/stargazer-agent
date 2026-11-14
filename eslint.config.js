@@ -5,25 +5,11 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/', 'web/dist/', 'node_modules/', '.codex/'],
+    ignores: ['dist/', 'web/dist/', 'node_modules/', 'backend/', '.codex/', '.claude/'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   ...pluginVue.configs['flat/essential'],
-  {
-    files: ['src/**/*.ts', 'test/**/*.ts', '*.ts'],
-    languageOptions: {
-      parserOptions: {
-        projectService: {
-          allowDefaultProject: ['*.ts'],
-        },
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-    rules: {
-      '@typescript-eslint/consistent-type-imports': 'error',
-    },
-  },
   {
     files: ['web/**/*.{ts,vue}'],
     languageOptions: {

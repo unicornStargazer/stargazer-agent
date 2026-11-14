@@ -2,7 +2,7 @@
 
 页面通过 `/api/chat/stream` 发送消息；FastAPI 校验后交给 ConversationService。会话用例锁定当前 session、检查请求 ID、选择模型并加载历史，再交给 AgentRunner。Runner 驱动模型与 Skill Tool 循环。文字、公开推理和用量及时流向页面，完整结果落库成功后才发送 `done`。
 
-生产构建页面由 Python 提供，页面和 API 同源。开发 Vite 的 5173 仍代理 3000；本批 Python 开发配置使用 3001，默认 TS 启动脚本暂不改变。
+生产构建页面由 Python 提供，页面和 API 同源。根 `npm start` / `npm run start:server` 启动 Python，`npm run dev` / `npm run web:dev` 同时启动 Python 与 Vite；`npm run web` 先构建前端再启动 Python。默认读取仓库根 `config/stargazer-agent.json`，使用 3000 与 Vite 5173 的 `/api` 代理对接。独立开发示例使用 3001 和独立数据库，需显式 `--config backend/config/local.json`，构建前端后访问 3001 同源页面；不会自动改变现有 Vite 代理。配置中的相对路径均基于仓库根，详见 [服务端配置](../../docs/configuration.md)。
 
 ## 运行时序
 

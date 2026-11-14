@@ -1,4 +1,6 @@
-# 后端架构
+# 后端架构（历史归档：TypeScript）
+
+> 本文保留旧 TypeScript/Fastify 后端的设计背景，不描述当前实现。旧根 `src/` 与 `test/` 已退出当前入口，以下路径、环境变量装配和 Profile 绑定限制不再适用于当前 Python 服务。当前架构与启动方式见 [Python 后端 README](../backend/README.md)、[HTTP 运行流程](../backend/docs/http-runtime.md) 和 [Agent 内核](../backend/docs/runtime-core.md)。当前 npm 后端入口启动 Python；Vue/TypeScript 前端继续保留。
 
 后端按职责分层，而不是按 Fastify、SQLite 或 OpenAI 的技术细节组织。这样新增模型供应商、存储实现或业务 Skill 时，核心对话流程不需要修改。
 

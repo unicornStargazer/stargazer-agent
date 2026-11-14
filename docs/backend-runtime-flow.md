@@ -1,4 +1,6 @@
-# 后端运行流程
+# 后端运行流程（历史归档：TypeScript）
+
+> 以下内容是旧 TypeScript/Node 后端的历史运行链路，保留用于理解迁移前设计，不是当前启动或配置指南。旧根 `src/`、环境变量、Skill-as-Profile 和 Profile 不可切换等说明均不适用于当前 Python 服务；文中的 npm 命令也不能按旧语义执行。当前 `start/start:server` 启动 Python，`dev/web:dev` 同时启动 Python 与 Vite。请使用 [根 README](../README.md)、[Python 后端 README](../backend/README.md)、[当前 HTTP 运行流程](../backend/docs/http-runtime.md) 和 [服务端配置](configuration.md)。
 
 ## 1. 概述
 
